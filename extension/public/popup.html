@@ -1,30 +1,66 @@
 <!doctype html>
-<html>
+<html lang="es">
   <head>
     <meta charset="utf-8" />
-    <style>
-      body { font: 13px system-ui; width: 260px; margin: 0; padding: 14px; }
-      h1 { font-size: 14px; margin: 0 0 10px; }
-      input, button { width: 100%; box-sizing: border-box; margin: 4px 0; padding: 8px; }
-      button { cursor: pointer; border: 0; border-radius: 6px; background: #5b5fc7; color: #fff; }
-      button.stop { background: #c74343; }
-      .hidden { display: none; }
-      #status { margin-top: 8px; color: #555; min-height: 16px; }
-    </style>
+    <title>Minutas</title>
+    <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <h1>Teams Meeting Assistant</h1>
-    <div id="login">
-      <input id="email" type="email" placeholder="Email" />
-      <input id="password" type="password" placeholder="Password" />
-      <button id="signin">Sign in</button>
-    </div>
-    <div id="capture" class="hidden">
-      <button id="start">● Start capturing</button>
-      <button id="stop" class="stop hidden">■ Stop & summarize</button>
-      <button id="cancel" class="hidden" style="background:#888">Discard capture</button>
-    </div>
+    <header class="row">
+      <span id="wordmark" class="wordmark"></span>
+      <span id="dot" class="dot"></span>
+    </header>
+
+    <section id="login" class="stack">
+      <input id="email" type="email" placeholder="Email" autocomplete="username" />
+      <input id="password" type="password" placeholder="Contraseña" autocomplete="current-password" />
+      <button id="signin" class="btn btn-primary">Entrar</button>
+    </section>
+
+    <section id="account" class="row hidden">
+      <span id="avatar" class="avatar"></span>
+      <span id="user-email" class="email"></span>
+      <button id="signout" class="btn-text">Salir</button>
+    </section>
+
+    <section id="capture" class="card hidden">
+      <div class="row toggle-row">
+        <label
+          for="autostart"
+          title="Arranca la captura al detectar una reunión (requiere micrófono ya habilitado)"
+          >Transcripción automática</label
+        >
+        <input id="autostart" type="checkbox" class="switch" />
+      </div>
+      <div id="consent-row">
+        <label class="field-label" for="consent">Audio de la reunión</label>
+        <select id="consent">
+          <option value="0">Sin grabación</option>
+          <option value="1">Buffer local</option>
+          <option value="2">Subir para re-transcripción (máx. fidelidad)</option>
+        </select>
+      </div>
+      <button id="start" class="btn btn-primary">● Empezar a transcribir</button>
+      <div id="live-row" class="row hidden">
+        <span class="dot live pulse"></span>
+        <span>Transcribiendo · <span id="elapsed" class="elapsed">00:00</span></span>
+        <button id="view-live" class="btn-text link-right">Ver en vivo</button>
+      </div>
+      <button id="stop" class="btn btn-danger hidden">■ Detener y resumir</button>
+      <button id="cancel" class="btn btn-ghost hidden">Descartar captura</button>
+    </section>
+
+    <section id="recent" class="hidden">
+      <div class="section-title">Últimas reuniones</div>
+      <div id="recent-list"></div>
+    </section>
+
     <div id="status"></div>
+    <footer class="row">
+      <a id="open-dashboard" class="footer-link" target="_blank" rel="noreferrer"
+        >Abrir panel →</a
+      >
+    </footer>
     <script type="module" src="popup.js"></script>
   </body>
 </html>

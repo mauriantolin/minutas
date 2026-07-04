@@ -428,6 +428,14 @@ export interface SegmentsAppendResponse {
   segmentCount: number;
 }
 
+/** One in-meeting widget tag tap (§4.2), timed relative to capture start. */
+export interface HighlightTap {
+  /** Seconds from capture start. */
+  t: number;
+  /** Tag id, e.g. "decision", "action", "question", "highlight". */
+  tag: string;
+}
+
 /**
  * POST /meetings/{id}/finalize — full final payload; idempotent by `meetingId`
  * (SFN execution name = meetingId, deduped by AWS), so blind retries after a 5xx
@@ -435,6 +443,8 @@ export interface SegmentsAppendResponse {
  */
 export interface MeetingFinalizeRequest extends MeetingIngestPayload {
   captureId: string;
+  /** Widget tag taps during capture — persisted with the raw payload. */
+  highlights?: HighlightTap[];
   signalHealth?: SignalHealth;
   /** Consent recorded on the meeting item (§7); absent = tier 0. */
   audioConsent?: AudioConsent;

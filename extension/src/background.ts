@@ -135,7 +135,11 @@ async function registerMeeting(
   }
 }
 
-async function startCapture(consentTier: ConsentTier): Promise<{ captionsDetected: boolean }> {
+async function startCapture(consentTier: ConsentTier): Promise<{
+  captionsDetected: boolean;
+  meetingId?: string;
+  startedAt: string;
+}> {
   if (await readState()) throw new Error("Capture already in progress");
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error("No active tab");
@@ -204,7 +208,11 @@ async function startCapture(consentTier: ConsentTier): Promise<{ captionsDetecte
       crossCheckActive: crossCheck,
     }),
   });
-  return { captionsDetected: !!captionsDetected };
+  return {
+    captionsDetected: !!captionsDetected,
+    meetingId,
+    startedAt: meetingMeta.startedAt,
+  };
 }
 
 // Segment batching: state mutations are serialized because SEGMENT_FINAL messages arrive
@@ -451,6 +459,7 @@ async function stopCapture(): Promise<{
     segments,
     speakerTimeline: content?.speakerTimeline ?? [],
     captionTimeline: content?.captionTimeline ?? captionCkpt?.captionTimeline ?? [],
+    ...(content?.highlights?.length && { highlights: content.highlights }),
     signalHealth,
     ...audioDeclaration,
   };
@@ -573,7 +582,12 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
   if (msg.type === "GET_STATE") {
     // The popup just refreshed the session token — a good moment to retry orphans.
     void recoverOrphans();
-    readState().then((s) => sendResponse({ capturing: !!s }));
+    readState().then((s) =>
+      sendResponse({
+        capturing: !!s,
+        ...(s && { meetingId: s.meetingId, startedAt: s.meetingMeta.startedAt }),
+      }),
+    );
     return true;
   }
   if (msg.type === "POPUP_START") {

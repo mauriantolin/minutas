@@ -60,6 +60,10 @@ import {
 import { LambdaInvoke } from "aws-cdk-lib/aws-stepfunctions-tasks";
 import {
   Distribution,
+  Function as CloudFrontFunction,
+  FunctionCode,
+  FunctionEventType,
+  FunctionRuntime,
   ViewerProtocolPolicy,
 } from "aws-cdk-lib/aws-cloudfront";
 import { S3BucketOrigin } from "aws-cdk-lib/aws-cloudfront-origins";
@@ -866,10 +870,34 @@ export class TeamsAgentCoreStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
     });
+    // Next.js static export writes each route as <route>/index.html; S3 origins
+    // don't resolve directory indexes, so extensionless route requests are
+    // rewritten at the edge. Query strings live outside request.uri and pass
+    // through untouched. Unknown paths still fall to the SPA 404 fallback below.
+    const spaRewrite = new CloudFrontFunction(this, "SpaRewriteFn", {
+      runtime: FunctionRuntime.JS_2_0,
+      code: FunctionCode.fromInline(`
+function handler(event) {
+  var request = event.request;
+  var routes = ["/login", "/meetings", "/meeting", "/live", "/kits", "/settings"];
+  var uri = request.uri.endsWith("/") ? request.uri.slice(0, -1) : request.uri;
+  if (routes.includes(uri)) {
+    request.uri = uri + "/index.html";
+  }
+  return request;
+}
+`),
+    });
     const distribution = new Distribution(this, "WebDistribution", {
       defaultBehavior: {
         origin: S3BucketOrigin.withOriginAccessControl(webBucket),
         viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        functionAssociations: [
+          {
+            function: spaRewrite,
+            eventType: FunctionEventType.VIEWER_REQUEST,
+          },
+        ],
       },
       defaultRootObject: "index.html",
       errorResponses: [

@@ -3,6 +3,8 @@
 export const CONFIG = {
   region: "us-east-1",
   apiUrl: "https://rv3wzr5llg.execute-api.us-east-1.amazonaws.com",
+  // CloudFront WebUrl stack output — popup deep links (§4.1).
+  dashboardUrl: "https://d50200vgx8fgw.cloudfront.net",
   userPoolId: "us-east-1_8iPeU4V78",
   userPoolClientId: "18m3lcii9uq8qd3k3f59kplgns",
   identityPoolId: "us-east-1:846a80da-00b1-4db1-8ba5-206249505f29",

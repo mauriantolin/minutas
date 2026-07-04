@@ -1,53 +1,66 @@
+import { CognitoUserPool } from "amazon-cognito-identity-js";
 import { signIn, currentIdToken } from "./auth.js";
+import { CONFIG } from "./config.js";
+
+/** White-label product name — single popup-side definition (spec §0). */
+const APP_NAME = "Minutas";
 
 const $ = (id: string) => document.getElementById(id)!;
 const status = (t: string) => ($("status").textContent = t);
 const show = (id: string, on: boolean) => $(id).classList.toggle("hidden", !on);
 
-function setCapturing(capturing: boolean) {
+let signedIn = false;
+let liveMeetingId: string | undefined;
+let elapsedTimer: number | undefined;
+
+// Header status dot (§4.1): gray = sin sesión, green = conectado, red = capturando.
+function setDot(state: "off" | "ok" | "live") {
+  $("dot").className =
+    "dot" + (state === "ok" ? " ok" : state === "live" ? " live pulse" : "");
+}
+
+const mmss = (ms: number): string => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+};
+
+// "Transcribiendo · mm:ss" (§4.1) — anchored to the capture start timestamp.
+function startElapsed(startedAt: string | undefined) {
+  stopElapsed();
+  const startEpoch = startedAt ? Date.parse(startedAt) : Date.now();
+  const render = () => ($("elapsed").textContent = mmss(Date.now() - startEpoch));
+  render();
+  elapsedTimer = window.setInterval(render, 1000);
+}
+
+function stopElapsed() {
+  if (elapsedTimer) window.clearInterval(elapsedTimer);
+  elapsedTimer = undefined;
+}
+
+function setCapturing(capturing: boolean, live?: { meetingId?: string; startedAt?: string }) {
   show("start", !capturing);
   show("stop", capturing);
   show("cancel", capturing);
-  document.getElementById("consent-row")?.classList.toggle("hidden", capturing);
-  if (!capturing) document.getElementById("captions-hint")?.remove();
-}
-
-// Consent ladder (§7), chosen per meeting before Start. Injected here because the
-// static popup.html stays minimal; the last choice persists as the default.
-const CONSENT_OPTIONS: [string, string][] = [
-  ["0", "Sin grabación"],
-  ["1", "Buffer local"],
-  ["2", "Subir para re-transcripción (máx. fidelidad)"],
-];
-
-async function buildConsentRow() {
-  if (document.getElementById("consent-row")) return;
-  const row = document.createElement("div");
-  row.id = "consent-row";
-  const label = document.createElement("label");
-  label.htmlFor = "consent";
-  label.textContent = "Audio de la reunión";
-  label.style.cssText = "display:block;margin-top:2px;color:#555";
-  const select = document.createElement("select");
-  select.id = "consent";
-  select.style.cssText = "width:100%;box-sizing:border-box;margin:4px 0;padding:8px";
-  for (const [value, text] of CONSENT_OPTIONS) {
-    const opt = document.createElement("option");
-    opt.value = value;
-    opt.textContent = text;
-    select.appendChild(opt);
+  show("live-row", capturing);
+  show("consent-row", !capturing);
+  if (capturing) {
+    liveMeetingId = live?.meetingId;
+    startElapsed(live?.startedAt);
+  } else {
+    liveMeetingId = undefined;
+    stopElapsed();
+    document.getElementById("captions-hint")?.remove();
   }
-  const { consentTierPref } = await chrome.storage.local.get("consentTierPref");
-  select.value = String(consentTierPref ?? 0);
-  select.addEventListener("change", () =>
-    void chrome.storage.local.set({ consentTierPref: Number(select.value) }),
-  );
-  row.append(label, select);
-  $("capture").insertBefore(row, $("start"));
+  setDot(capturing ? "live" : signedIn ? "ok" : "off");
 }
 
-const consentTier = (): number =>
-  Number((document.getElementById("consent") as HTMLSelectElement | null)?.value ?? 0);
+function emailFromToken(token: string): string {
+  const b64 = token.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/");
+  return (JSON.parse(atob(b64)).email as string | undefined) ?? "";
+}
+
+const consentTier = (): number => Number(($("consent") as HTMLSelectElement).value);
 
 // Non-blocking: capture runs fine without captions, but caption coverage is the
 // cheapest speaker-fidelity signal, so nudge the user to turn them on.
@@ -56,41 +69,125 @@ function captionsHint(captionsDetected: boolean) {
   if (captionsDetected) return;
   const hint = document.createElement("div");
   hint.id = "captions-hint";
-  hint.style.cssText = "margin-top:6px;padding:6px 8px;border-radius:6px;background:#fff4d6;color:#6b5200";
-  hint.textContent = "Activá los subtítulos en vivo de Teams para mejorar la precisión de hablantes";
+  hint.className = "hint";
+  hint.textContent =
+    "Activá los subtítulos en vivo de Teams para mejorar la precisión de hablantes";
   $("capture").appendChild(hint);
 }
 
-async function enterCaptureView() {
-  $("login").classList.add("hidden");
-  $("capture").classList.remove("hidden");
-  await buildConsentRow();
+async function loadRecentMeetings(token: string) {
+  const res = await fetch(`${CONFIG.apiUrl}/meetings`, {
+    headers: { authorization: `Bearer ${token}` },
+  }).catch(() => null);
+  if (!res?.ok) return;
+  const { meetings } = (await res.json()) as {
+    meetings: { meetingId: string; title: string; startedAt: string }[];
+  };
+  const recent = meetings
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+    .slice(0, 3);
+  if (recent.length === 0) return;
+  const list = $("recent-list");
+  list.textContent = "";
+  for (const m of recent) {
+    const row = document.createElement("div");
+    row.className = "meeting clickable";
+    row.title = "Abrir en el panel";
+    row.addEventListener("click", () =>
+      chrome.tabs.create({
+        url: `${CONFIG.dashboardUrl}/meeting?id=${encodeURIComponent(m.meetingId)}`,
+      }),
+    );
+    const title = document.createElement("div");
+    title.className = "meeting-title";
+    title.textContent = m.title;
+    const date = document.createElement("div");
+    date.className = "meeting-date";
+    date.textContent = new Date(m.startedAt).toLocaleString("es", {
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    row.append(title, date);
+    list.appendChild(row);
+  }
+  show("recent", true);
+}
+
+async function enterCaptureView(token: string) {
+  signedIn = true;
+  show("login", false);
+  show("account", true);
+  show("capture", true);
+  const email = emailFromToken(token);
+  $("user-email").textContent = email;
+  $("avatar").textContent = email.slice(0, 2).toUpperCase();
+
+  const { consentTierPref, autoStartPref } = await chrome.storage.local.get([
+    "consentTierPref",
+    "autoStartPref",
+  ]);
+  ($("consent") as HTMLSelectElement).value = String(consentTierPref ?? 0);
+  ($("autostart") as HTMLInputElement).checked = !!autoStartPref;
+
   // Reflect whatever the background is actually doing — survives popup close / SW restart.
   const state = await chrome.runtime.sendMessage({ type: "GET_STATE" });
-  setCapturing(!!state?.capturing);
-  if (state?.capturing) status("Capturing in progress…");
+  setCapturing(!!state?.capturing, state);
+  if (state?.capturing) status("Transcribiendo… mantené abierta la pestaña de la reunión.");
+  void loadRecentMeetings(token);
 }
 
 async function init() {
+  $("wordmark").textContent = APP_NAME;
+  document.title = APP_NAME;
+  ($("open-dashboard") as HTMLAnchorElement).href = CONFIG.dashboardUrl;
+  setDot("off");
   const token = await currentIdToken();
   if (token) {
     await chrome.storage.session.set({ idToken: token });
-    await enterCaptureView();
+    await enterCaptureView(token);
   }
 }
 
+$("consent").addEventListener("change", () =>
+  void chrome.storage.local.set({ consentTierPref: consentTier() }),
+);
+
+// Preference only for now: the meeting-join auto-start path (§4.1) lives in the
+// service worker and is wired in a later milestone.
+$("autostart").addEventListener("change", (e) =>
+  void chrome.storage.local.set({ autoStartPref: (e.target as HTMLInputElement).checked }),
+);
+
 $("signin").addEventListener("click", async () => {
-  status("Signing in…");
+  status("Iniciando sesión…");
   try {
     const email = ($("email") as HTMLInputElement).value;
     const password = ($("password") as HTMLInputElement).value;
     const idToken = await signIn(email, password);
     await chrome.storage.session.set({ idToken });
     status("");
-    await enterCaptureView();
+    await enterCaptureView(idToken);
   } catch (e) {
     status(`Error: ${e instanceof Error ? e.message : String(e)}`);
   }
+});
+
+$("signout").addEventListener("click", async () => {
+  const state = await chrome.runtime.sendMessage({ type: "GET_STATE" });
+  if (state?.capturing) return status("Detené la captura antes de salir.");
+  new CognitoUserPool({ UserPoolId: CONFIG.userPoolId, ClientId: CONFIG.userPoolClientId })
+    .getCurrentUser()
+    ?.signOut();
+  await chrome.storage.session.remove("idToken");
+  signedIn = false;
+  show("account", false);
+  show("capture", false);
+  show("recent", false);
+  show("login", true);
+  setDot("off");
+  status("");
 });
 
 // The mic permission can't be requested from the popup — the prompt steals focus, the
@@ -109,30 +206,39 @@ async function micGranted(): Promise<boolean> {
 $("start").addEventListener("click", async () => {
   if (!(await micGranted())) {
     chrome.tabs.create({ url: chrome.runtime.getURL("permission.html") });
-    status("Habilitá el micrófono en la pestaña que se abrió y volvé a tocar Start.");
+    status("Habilitá el micrófono en la pestaña que se abrió y volvé a tocar Empezar.");
     return;
   }
-  status("Starting capture…");
+  status("Iniciando captura…");
   const res = await chrome.runtime.sendMessage({ type: "POPUP_START", consentTier: consentTier() });
   if (res?.error) return status(`Error: ${res.error}`);
-  setCapturing(true);
+  setCapturing(true, res);
   captionsHint(!!res.captionsDetected);
-  status("Capturing… keep the meeting tab open.");
+  status("Transcribiendo… mantené abierta la pestaña de la reunión.");
 });
 
 $("stop").addEventListener("click", async () => {
-  status("Processing…");
+  status("Procesando…");
   const res = await chrome.runtime.sendMessage({ type: "POPUP_STOP" });
   setCapturing(false);
   if (res?.error) return status(`Error: ${res.error}`);
   const warning = res?.audioWarning ? ` Atención: ${res.audioWarning}.` : "";
-  status(`Done. Meeting ${res.meetingId ?? ""} saved.${warning}`);
+  status(`Listo. Reunión ${res.meetingId ?? ""} guardada.${warning}`);
 });
 
 $("cancel").addEventListener("click", async () => {
   await chrome.runtime.sendMessage({ type: "POPUP_CANCEL" });
   setCapturing(false);
-  status("Capture discarded.");
+  status("Captura descartada.");
+});
+
+// Live transcript entry point (§4.1); without a meetingId (offline start) the
+// live view can't be addressed, so fall back to the meetings list.
+$("view-live").addEventListener("click", () => {
+  const url = liveMeetingId
+    ? `${CONFIG.dashboardUrl}/live?id=${encodeURIComponent(liveMeetingId)}`
+    : `${CONFIG.dashboardUrl}/meetings`;
+  void chrome.tabs.create({ url });
 });
 
 void init();

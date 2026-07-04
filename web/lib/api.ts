@@ -56,9 +56,54 @@ export interface Segment {
   text: string;
 }
 
+/** Clean-transcript turn served by GET /meetings/{id} — `id` is the `[Tn]` anchor target. */
+export interface CleanTurn {
+  id: string;
+  sourceIds: string[];
+  speaker: string;
+  startTime: number;
+  endTime: number;
+  text: string;
+  tags: string[];
+}
+
+export interface ExtractedItem {
+  text: string;
+  turnId?: string;
+  inferred?: boolean;
+}
+
+export interface ExtractedActionItem extends ExtractedItem {
+  owner?: string;
+  due?: string;
+  done?: boolean;
+}
+
+export interface Extraction {
+  decisions?: ExtractedItem[];
+  actionItems?: ExtractedActionItem[];
+  openQuestions?: ExtractedItem[];
+  keyNumbers?: ExtractedItem[];
+}
+
+export interface VerifiedClaim {
+  claim: string;
+  verdict: string;
+  turnId?: string;
+  critical?: boolean;
+}
+
 export interface MeetingDetail extends Meeting {
   segments: Segment[];
   summary?: { summary: string; keyPoints: string[]; actionItems: { text: string; owner?: string }[] };
+  /** P4 artifact — canonical turns for the detail view; absent on legacy/live meetings. */
+  cleanTranscript?: { turns: CleanTurn[]; chapters?: { startTime: number; title: string }[] };
+  /** P5 artifact — decisions/actions/questions/numbers with `[Tn]` grounding. */
+  extraction?: Extraction;
+  /** P6/P8 artifact — full published summary Markdown with `[Tn]` anchors. */
+  summaryArtifact?: { text: string; anchoredTurnIds?: string[] };
+  /** P7 artifact — claim-level verification report. */
+  verification?: { claims?: VerifiedClaim[] };
 }
 
 export const listMeetings = (t: string): Promise<{ meetings: Meeting[] }> =>

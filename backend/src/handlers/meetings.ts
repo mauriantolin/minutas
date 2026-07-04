@@ -34,10 +34,11 @@ export const get: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) => {
   const id = event.pathParameters?.id;
   if (!id) return json(200, { meetings: await listMeetings(tenantId) });
 
-  const [meeting, cleanTranscript, summaryArtifact, verification] =
+  const [meeting, cleanTranscript, extraction, summaryArtifact, verification] =
     await Promise.all([
       getMeeting(tenantId, id),
       ifExists(getCleanTranscript(tenantId, id)),
+      ifExists(getExtraction(tenantId, id)),
       ifExists(getSummaryArtifact(tenantId, id)),
       ifExists(getVerification(tenantId, id)),
     ]);
@@ -45,6 +46,7 @@ export const get: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) => {
   return json(200, {
     ...meeting,
     ...(cleanTranscript ? { cleanTranscript } : {}),
+    ...(extraction ? { extraction } : {}),
     ...(summaryArtifact ? { summaryArtifact } : {}),
     ...(verification ? { verification } : {}),
   });
