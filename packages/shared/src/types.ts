@@ -390,6 +390,8 @@ export interface MeetingIngestPayload {
   captionTimeline?: CaptionEvent[];
   /** Display name of the local user (mic source resolves to this). */
   localUserName: string;
+  /** Widget tag taps during capture — P4 anchors them onto clean turns. */
+  highlights?: HighlightTap[];
 }
 
 // ---------------------------------------------------------------------------
@@ -443,8 +445,6 @@ export interface HighlightTap {
  */
 export interface MeetingFinalizeRequest extends MeetingIngestPayload {
   captureId: string;
-  /** Widget tag taps during capture — persisted with the raw payload. */
-  highlights?: HighlightTap[];
   signalHealth?: SignalHealth;
   /** Consent recorded on the meeting item (§7); absent = tier 0. */
   audioConsent?: AudioConsent;

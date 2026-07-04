@@ -9,6 +9,7 @@ import type {
   ExtractionResult,
   GateBScores,
   GateId,
+  HighlightTap,
   Meeting,
   MeetingIngestPayload,
   MeetingStatus,
@@ -341,7 +342,10 @@ export const handler = async (
 
     case "clean":
       return llmPhase(async () => {
-        const labeled = await getLabeledTranscript(tenantId, meetingId);
+        const [labeled, rawPayload] = await Promise.all([
+          getLabeledTranscript(tenantId, meetingId),
+          getRawPayload(tenantId, meetingId),
+        ]);
         const gateAFired =
           pipeline.scores.gates?.some((g) => g.gate === "gateA" && g.fired) ??
           false;
@@ -385,6 +389,7 @@ export const handler = async (
           substituteRawTurns(clean, audit.violations, labeled);
           groundedOn = "raw";
         }
+        applyHighlightTaps(clean, rawPayload.highlights);
         pipeline.scores.invariants = {
           numberMismatches: audit.numberMismatches,
           negationMismatches: audit.negationMismatches,
@@ -965,6 +970,27 @@ function buildCleanTranscript(
     turns: proto.map((t, i) => ({ id: `T${i + 1}`, ...t })),
     chapters: [...draft.chapters].sort((a, b) => a.startTime - b.startTime),
   };
+}
+
+/**
+ * Widget taps carry no turn reference — only a capture-clock timestamp — so
+ * each anchors to the turn spanning `t`, falling back to the latest turn that
+ * started before it (taps usually land moments after the highlighted speech).
+ */
+function applyHighlightTaps(
+  clean: CleanTranscript,
+  taps?: HighlightTap[],
+): void {
+  if (!taps?.length) return;
+  for (const tap of taps) {
+    let turn: CleanTurn | undefined;
+    for (const t of clean.turns) {
+      if (t.startTime > tap.t) break;
+      turn = t;
+    }
+    turn ??= clean.turns[0];
+    if (turn && !turn.tags.includes(tap.tag)) turn.tags.push(tap.tag);
+  }
 }
 
 interface CleanViolation {
