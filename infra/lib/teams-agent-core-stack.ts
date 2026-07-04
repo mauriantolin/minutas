@@ -33,8 +33,12 @@ import {
   DefinitionBody,
   Fail,
   JsonPath,
+  Pass,
+  Result,
   StateMachine,
+  Succeed,
   TaskInput,
+  type IChainable,
 } from "aws-cdk-lib/aws-stepfunctions";
 import { LambdaInvoke } from "aws-cdk-lib/aws-stepfunctions-tasks";
 import {
@@ -149,11 +153,43 @@ export class TeamsAgentCoreStack extends Stack {
       ]),
     });
 
+    // Gate thresholds are baked into the Choice states at synth time and
+    // mirrored into the worker env so the worker's GateDecision audit trail
+    // can never disagree with the SFN routing.
+    const gateAMaxUnresolvedPct = Number(
+      process.env.GATE_A_MAX_UNRESOLVED_PCT ?? "15",
+    );
+    const gateAMinLabelMargin = Number(
+      process.env.GATE_A_MIN_LABEL_MARGIN ?? "0.3",
+    );
+    const gateAMinCaptionAgreementPct = Number(
+      process.env.GATE_A_MIN_CAPTION_AGREEMENT_PCT ?? "80",
+    );
+    const gateCMinMeanConfidence = Number(
+      process.env.GATE_C_MIN_MEAN_CONFIDENCE ?? "0.8",
+    );
+    const gateCMinP10Confidence = Number(
+      process.env.GATE_C_MIN_P10_CONFIDENCE ?? "0.5",
+    );
+    const gateCMaxCaptionWer = Number(
+      process.env.GATE_C_MAX_CAPTION_WER ?? "0.35",
+    );
+    const gateCMinSelfQuality = Number(
+      process.env.GATE_C_MIN_SELF_QUALITY ?? "0.5",
+    );
+    const gateCMaxGarbledPct = Number(
+      process.env.GATE_C_MAX_GARBLED_PCT ?? "20",
+    );
+    const gateEMaxUnsupportedRate = Number(
+      process.env.GATE_E_MAX_UNSUPPORTED_RATE ?? "0.1",
+    );
+
     const pipelineWorker = new NodejsFunction(this, "PipelineWorkerFn", {
       entry: path.join(BACKEND_SRC, "handlers", "pipeline.ts"),
       runtime: Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(300),
-      memorySize: 512,
+      // Sized for the Opus escalation pass on long transcripts.
+      timeout: Duration.seconds(600),
+      memorySize: 1024,
       environment: {
         TABLE_NAME: table.tableName,
         TRANSCRIPT_BUCKET: transcripts.bucketName,
@@ -163,6 +199,15 @@ export class TeamsAgentCoreStack extends Stack {
         MODEL_HAIKU: modelHaiku,
         MODEL_SONNET: modelSonnet,
         MODEL_OPUS: modelOpus,
+        GATE_A_MAX_UNRESOLVED_PCT: String(gateAMaxUnresolvedPct),
+        GATE_A_MIN_LABEL_MARGIN: String(gateAMinLabelMargin),
+        GATE_A_MIN_CAPTION_AGREEMENT_PCT: String(gateAMinCaptionAgreementPct),
+        GATE_C_MIN_MEAN_CONFIDENCE: String(gateCMinMeanConfidence),
+        GATE_C_MIN_P10_CONFIDENCE: String(gateCMinP10Confidence),
+        GATE_C_MAX_CAPTION_WER: String(gateCMaxCaptionWer),
+        GATE_C_MIN_SELF_QUALITY: String(gateCMinSelfQuality),
+        GATE_C_MAX_GARBLED_PCT: String(gateCMaxGarbledPct),
+        GATE_E_MAX_UNSUPPORTED_RATE: String(gateEMaxUnsupportedRate),
       },
       bundling,
     });
@@ -170,7 +215,12 @@ export class TeamsAgentCoreStack extends Stack {
     transcripts.grantReadWrite(pipelineWorker);
     pipelineWorker.addToRolePolicy(bedrockModelAccess);
 
-    const workerTask = (id: string, phase: string, resultPath: string) => {
+    const workerTask = (
+      id: string,
+      phase: string,
+      resultPath: string,
+      extraPayload: Record<string, unknown> = {},
+    ) => {
       const task = new LambdaInvoke(this, id, {
         lambdaFunction: pipelineWorker,
         payload: TaskInput.fromObject({
@@ -178,6 +228,7 @@ export class TeamsAgentCoreStack extends Stack {
           meetingId: JsonPath.stringAt("$.meetingId"),
           executionArn: JsonPath.stringAt("$$.Execution.Id"),
           phase,
+          ...extraPayload,
         }),
         payloadResponseOnly: true,
         resultPath,
@@ -215,22 +266,91 @@ export class TeamsAgentCoreStack extends Stack {
 
     const correlate = workerTask("Correlate", "correlate", "$.correlate");
     const asrScore = workerTask("AsrScore", "asrScore", "$.asrScore");
+    // Every LLM phase keeps its result visible at $.phaseResult (read once by
+    // the guard right after it) so a needs_review status is never discarded.
+    const clean = workerTask("Clean", "clean", "$.phaseResult", {
+      modelTier: "haiku",
+      speakerRepair: JsonPath.objectAt("$.speakerRepair"),
+    });
+    const extract = workerTask("Extract", "extract", "$.phaseResult", {
+      modelTier: "haiku",
+    });
+    const synthesize = workerTask("Synthesize", "synthesize", "$.phaseResult", {
+      modelTier: JsonPath.stringAt("$.synthTier"),
+    });
+    // Every verify pass overwrites $.verify so all Gate E choices read one path.
+    const verify = workerTask("Verify", "verify", "$.verify", {
+      modelTier: "haiku",
+    });
+    const repair = workerTask("Repair", "repair", "$.phaseResult", {
+      modelTier: "haiku",
+    });
+    const reVerify = workerTask("ReVerify", "verify", "$.verify", {
+      modelTier: "haiku",
+    });
+    const synthesizeSonnet = workerTask(
+      "SynthesizeSonnet",
+      "synthesize",
+      "$.phaseResult",
+      { modelTier: "sonnet" },
+    );
+    const verifyFinal = workerTask("VerifyFinal", "verify", "$.verify", {
+      modelTier: "haiku",
+    });
+    const opusFinal = workerTask("OpusFinal", "synthesize", "$.phaseResult", {
+      modelTier: "opus",
+    });
+    const verifyOpus = workerTask("VerifyOpus", "verify", "$.verify", {
+      modelTier: "haiku",
+    });
     const publish = workerTask("Publish", "publish", JsonPath.DISCARD);
-    for (const task of [correlate, asrScore, publish]) {
+    // Ladder exhausted: worker publishes with needs_review if the persisted
+    // verification scores still fail the Gate E thresholds in its env.
+    const publishWithFlag = workerTask(
+      "PublishWithFlag",
+      "publish",
+      JsonPath.DISCARD,
+      { flagIfUnverified: true },
+    );
+
+    const allTasks = [
+      correlate,
+      asrScore,
+      clean,
+      extract,
+      synthesize,
+      verify,
+      repair,
+      reVerify,
+      synthesizeSonnet,
+      verifyFinal,
+      opusFinal,
+      verifyOpus,
+      publish,
+      publishWithFlag,
+    ];
+    for (const task of allTasks) {
       task.addCatch(setError, { resultPath: "$.error" });
     }
 
-    // Gate thresholds are baked into the Choice states at synth time; both
-    // branches continue for now — real routing lands with the M3 gates.
-    const gateAMaxUnresolvedPct = Number(
-      process.env.GATE_A_MAX_UNRESOLVED_PCT ?? "15",
-    );
-    const gateAMinLabelMargin = Number(
-      process.env.GATE_A_MIN_LABEL_MARGIN ?? "0.3",
-    );
-    const gateCMinMeanConfidence = Number(
-      process.env.GATE_C_MIN_MEAN_CONFIDENCE ?? "0.8",
-    );
+    // Choice states cannot mutate state, so each gate routes through a Pass
+    // that stamps its decision onto the payload for downstream worker phases.
+    const flagSpeakerRepair = new Pass(this, "FlagSpeakerRepair", {
+      result: Result.fromBoolean(true),
+      resultPath: "$.speakerRepair",
+    });
+    const skipSpeakerRepair = new Pass(this, "SkipSpeakerRepair", {
+      result: Result.fromBoolean(false),
+      resultPath: "$.speakerRepair",
+    });
+    const hintTierSonnet = new Pass(this, "HintTierSonnet", {
+      result: Result.fromString("sonnet"),
+      resultPath: "$.synthTier",
+    });
+    const hintTierHaiku = new Pass(this, "HintTierHaiku", {
+      result: Result.fromString("haiku"),
+      resultPath: "$.synthTier",
+    });
 
     const gateA = new Choice(this, "GateA")
       .when(
@@ -249,11 +369,23 @@ export class TeamsAgentCoreStack extends Stack {
               gateAMinLabelMargin,
             ),
           ),
+          Condition.and(
+            Condition.isPresent(
+              "$.correlate.scores.correlation.captionAgreementPct",
+            ),
+            Condition.numberLessThan(
+              "$.correlate.scores.correlation.captionAgreementPct",
+              gateAMinCaptionAgreementPct,
+            ),
+          ),
         ),
-        asrScore,
+        flagSpeakerRepair,
       )
-      .otherwise(asrScore);
+      .otherwise(skipSpeakerRepair);
 
+    // GateC here only sees the SFN-visible meanConfidence; the worker's
+    // synthesize phase re-reads the full recorded gateC decision (p10, caption
+    // WER, P4 self-report) and may out-escalate a haiku hint, never downgrade.
     const gateC = new Choice(this, "GateC")
       .when(
         Condition.and(
@@ -263,12 +395,87 @@ export class TeamsAgentCoreStack extends Stack {
             gateCMinMeanConfidence,
           ),
         ),
-        publish,
+        hintTierSonnet,
+      )
+      .otherwise(hintTierHaiku);
+
+    const verifRate = "$.verify.scores.verification.unsupportedRate";
+    const verifUnsupported = "$.verify.scores.verification.unsupported";
+    // Optional absolute floor: any UNSUPPORTED on a critical field escalates
+    // regardless of rate. isPresent-guarded because the worker only emits it
+    // once critical-claim tallying lands.
+    const verifCritical = "$.verify.scores.verification.criticalUnsupported";
+    const gateEFail = () =>
+      Condition.or(
+        Condition.and(
+          Condition.isPresent(verifRate),
+          Condition.numberGreaterThan(verifRate, gateEMaxUnsupportedRate),
+        ),
+        Condition.and(
+          Condition.isPresent(verifCritical),
+          Condition.numberGreaterThan(verifCritical, 0),
+        ),
+      );
+
+    // §2-P7 ladder: heavy failure skips targeted repair and goes straight to
+    // Sonnet; any leftover unsupported claim below the rate threshold gets one
+    // targeted repair pass; zero unsupported publishes.
+    const gateE = new Choice(this, "GateE")
+      .when(gateEFail(), synthesizeSonnet)
+      .when(
+        Condition.and(
+          Condition.isPresent(verifUnsupported),
+          Condition.numberGreaterThan(verifUnsupported, 0),
+        ),
+        repair,
       )
       .otherwise(publish);
+    // Post-repair residual below the rate bar publishes, but the worker's
+    // publish phase flags any leftover unsupported claim as needs_review —
+    // "ready" is reserved for fully verified summaries.
+    const gateE2 = new Choice(this, "GateE2")
+      .when(gateEFail(), synthesizeSonnet)
+      .otherwise(publish);
+    const gateE3 = new Choice(this, "GateE3")
+      .when(gateEFail(), opusFinal)
+      .otherwise(publish);
+
+    // A parse/validation failure inside an LLM phase already published the
+    // meeting as needs_review (a valid terminal state, §2-P7): the execution
+    // must SUCCEED there instead of running the next phase against a missing
+    // artifact and letting SetError stamp a terminal "failed" over it.
+    const needsReviewPublished = new Succeed(this, "NeedsReviewPublished");
+    const parseGuard = (id: string, statusPath: string, next: IChainable) =>
+      new Choice(this, id)
+        .when(
+          Condition.and(
+            Condition.isPresent(statusPath),
+            Condition.stringEquals(statusPath, "needs_review"),
+          ),
+          needsReviewPublished,
+        )
+        .otherwise(next);
 
     correlate.next(gateA);
+    flagSpeakerRepair.next(asrScore);
+    skipSpeakerRepair.next(asrScore);
     asrScore.next(gateC);
+    hintTierSonnet.next(clean);
+    hintTierHaiku.next(clean);
+    clean.next(parseGuard("CleanOk", "$.phaseResult.status", extract));
+    extract.next(parseGuard("ExtractOk", "$.phaseResult.status", synthesize));
+    synthesize.next(parseGuard("SynthesizeOk", "$.phaseResult.status", verify));
+    verify.next(parseGuard("VerifyOk", "$.verify.status", gateE));
+    repair.next(parseGuard("RepairOk", "$.phaseResult.status", reVerify));
+    reVerify.next(parseGuard("ReVerifyOk", "$.verify.status", gateE2));
+    synthesizeSonnet.next(
+      parseGuard("SynthesizeSonnetOk", "$.phaseResult.status", verifyFinal),
+    );
+    verifyFinal.next(parseGuard("VerifyFinalOk", "$.verify.status", gateE3));
+    opusFinal.next(parseGuard("OpusFinalOk", "$.phaseResult.status", verifyOpus));
+    verifyOpus.next(
+      parseGuard("VerifyOpusOk", "$.verify.status", publishWithFlag),
+    );
 
     const pipeline = new StateMachine(this, "MeetingPipeline", {
       definitionBody: DefinitionBody.fromChainable(correlate),
@@ -305,7 +512,9 @@ export class TeamsAgentCoreStack extends Stack {
       entry: path.join(BACKEND_SRC, "handlers", "meetings.ts"),
       handler: "ask",
       runtime: Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(60),
+      // API Gateway HTTP APIs abandon the request at a hard 30s; anything
+      // longer only bills for answers the client already dropped.
+      timeout: Duration.seconds(29),
       environment: fnEnv,
       bundling,
     });

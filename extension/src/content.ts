@@ -1,26 +1,69 @@
-import type { SpeakerTimelineEntry } from "@teams-agent-core/shared";
+import type { CaptionEvent, SignalHealth, SpeakerTimelineEntry } from "@teams-agent-core/shared";
 import {
+  captionsPresent,
+  observeCaptions,
   readActiveSpeaker,
   readMeetingTitle,
   readLocalUserName,
 } from "./teams-dom-adapter.js";
 
-// Runs inside the Teams PWA. Polls the active-speaker indicator to build the timeline the
-// backend uses to recover real names, and renders a live-transcript overlay driven by
+// Runs inside the Teams PWA. Captures the two free DOM signals — live captions
+// (MutationObserver, primary) and the active-speaker ring (400 ms poll, fallback) —
+// plus signalHealth over both, and renders a live-transcript overlay driven by
 // LIVE_LINE messages from the offscreen document.
 
 let timeline: SpeakerTimelineEntry[] = [];
+let captionTimeline: CaptionEvent[] = [];
 let startEpoch = 0;
 let lastName: string | null = null;
 let localUserName = "Yo";
 let poll: number | undefined;
 
+let stopCaptions: (() => void) | undefined;
+let captionFlushTimer: number | undefined;
+let captionFlushMark = 0;
+let domReadCount = 0;
+let speakerRingSeen = false;
+let captionHeartbeatLastT: number | undefined;
+let healthDirty = false;
+
 const POLL_MS = 400;
+const CAPTION_FLUSH_MS = 5000;
+
+const nowT = () => (Date.now() - startEpoch) / 1000;
+
+function signalHealth(): SignalHealth {
+  return {
+    captionsSeen: captionTimeline.length > 0,
+    speakerRingSeen,
+    domReadCount,
+    ...(captionHeartbeatLastT !== undefined && { captionHeartbeatLastT }),
+  };
+}
+
+// Ships new final captions + current signalHealth to the service worker, which
+// persists them to IndexedDB (crash recovery) and batches them to the backend.
+// Best-effort: the full timeline stays here and travels on CAPTURE_STOP anyway.
+function flushCaptions() {
+  const events = captionTimeline.slice(captionFlushMark);
+  if (events.length === 0 && !healthDirty) return;
+  captionFlushMark = captionTimeline.length;
+  healthDirty = false;
+  chrome.runtime
+    .sendMessage({ type: "CAPTION_CHECKPOINT", events, signalHealth: signalHealth() })
+    .catch(() => {});
+}
 
 function tick() {
   const name = readActiveSpeaker();
-  if (name && name !== lastName) {
-    timeline.push({ t: (Date.now() - startEpoch) / 1000, participantName: name });
+  if (!name) return;
+  domReadCount += 1;
+  // Every successful ring read refreshes health, so captions-off meetings keep
+  // checkpointing an accurate domReadCount instead of freezing at the first one.
+  healthDirty = true;
+  speakerRingSeen = true;
+  if (name !== lastName) {
+    timeline.push({ t: nowT(), participantName: name });
     lastName = name;
   }
 }
@@ -78,21 +121,57 @@ function renderLine(source: string, speakerLabel: string, text: string, isPartia
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "CAPTURE_START") {
+    // Tear down any leftover previous session BEFORE resetting state: its stop
+    // callback finalizes pending utterances into the OLD timeline (discarded
+    // below), and its timers must not keep running alongside the new ones.
+    if (poll) window.clearInterval(poll);
+    if (captionFlushTimer) window.clearInterval(captionFlushTimer);
+    stopCaptions?.();
+    stopCaptions = undefined;
     timeline = [];
+    captionTimeline = [];
+    captionFlushMark = 0;
+    domReadCount = 0;
+    speakerRingSeen = false;
+    captionHeartbeatLastT = undefined;
+    healthDirty = false;
     lastName = null;
     startEpoch = Date.now();
     localUserName = readLocalUserName() || "Yo";
     poll = window.setInterval(tick, POLL_MS);
+    stopCaptions = observeCaptions(
+      nowT,
+      (e) => captionTimeline.push(e),
+      () => {
+        captionHeartbeatLastT = nowT();
+        domReadCount += 1;
+        healthDirty = true;
+      },
+    );
+    captionFlushTimer = window.setInterval(flushCaptions, CAPTION_FLUSH_MS);
     createOverlay();
     sendResponse({
       title: readMeetingTitle(),
       localUserName: readLocalUserName(),
       startedAt: new Date(startEpoch).toISOString(),
+      captionsDetected: captionsPresent(),
     });
   } else if (msg.type === "CAPTURE_STOP") {
     if (poll) window.clearInterval(poll);
+    if (captionFlushTimer) window.clearInterval(captionFlushTimer);
+    stopCaptions?.();
+    stopCaptions = undefined;
+    // Close the timeline: interval building assumes each reading holds until
+    // the next one, so without a closing reading the final speaker's span
+    // (the whole meeting, for a single presenter) yields no interval.
+    if (lastName) timeline.push({ t: nowT(), participantName: lastName });
     removeOverlay();
-    sendResponse({ speakerTimeline: timeline, endedAt: new Date().toISOString() });
+    sendResponse({
+      speakerTimeline: timeline,
+      captionTimeline,
+      signalHealth: signalHealth(),
+      endedAt: new Date().toISOString(),
+    });
   } else if (msg.type === "LIVE_LINE") {
     renderLine(msg.source, msg.speakerLabel, msg.text, msg.isPartial);
   }

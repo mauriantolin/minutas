@@ -15,11 +15,16 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import type {
+  CleanTranscript,
+  CorrelatedSegment,
   DiarizedSegment,
+  ExtractionResult,
   LabeledSegment,
   Meeting,
   MeetingIngestPayload,
   MeetingRecord,
+  SummaryArtifact,
+  VerificationReport,
 } from "@teams-agent-core/shared";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -322,6 +327,101 @@ export async function getTranscript(
   meetingId: string,
 ): Promise<LabeledSegment[]> {
   return getJson<LabeledSegment[]>(`${tenantId}/${meetingId}/transcript.json`);
+}
+
+// --- P2–P8 pipeline artifacts (doc §4) under `{tenantId}/{meetingId}/` ---
+
+const artifactKey = (t: string, m: string, name: string) => `${t}/${m}/${name}`;
+
+export async function putLabeledTranscript(
+  tenantId: string,
+  meetingId: string,
+  segments: CorrelatedSegment[],
+): Promise<void> {
+  await putJson(artifactKey(tenantId, meetingId, "transcript.labeled.json"), segments);
+}
+
+export async function getLabeledTranscript(
+  tenantId: string,
+  meetingId: string,
+): Promise<CorrelatedSegment[]> {
+  return getJson(artifactKey(tenantId, meetingId, "transcript.labeled.json"));
+}
+
+export async function putCleanTranscript(
+  tenantId: string,
+  meetingId: string,
+  transcript: CleanTranscript,
+): Promise<void> {
+  await putJson(artifactKey(tenantId, meetingId, "transcript.clean.json"), transcript);
+}
+
+export async function getCleanTranscript(
+  tenantId: string,
+  meetingId: string,
+): Promise<CleanTranscript> {
+  return getJson(artifactKey(tenantId, meetingId, "transcript.clean.json"));
+}
+
+export async function putExtraction(
+  tenantId: string,
+  meetingId: string,
+  extraction: ExtractionResult,
+): Promise<void> {
+  await putJson(artifactKey(tenantId, meetingId, "extraction.json"), extraction);
+}
+
+export async function getExtraction(
+  tenantId: string,
+  meetingId: string,
+): Promise<ExtractionResult> {
+  return getJson(artifactKey(tenantId, meetingId, "extraction.json"));
+}
+
+/** P6/P7 working draft; P8 promotes it to `summary.json`. */
+export async function putSummaryDraft(
+  tenantId: string,
+  meetingId: string,
+  summary: SummaryArtifact,
+): Promise<void> {
+  await putJson(artifactKey(tenantId, meetingId, "summary-draft.json"), summary);
+}
+
+export async function getSummaryDraft(
+  tenantId: string,
+  meetingId: string,
+): Promise<SummaryArtifact> {
+  return getJson(artifactKey(tenantId, meetingId, "summary-draft.json"));
+}
+
+export async function putSummaryArtifact(
+  tenantId: string,
+  meetingId: string,
+  summary: SummaryArtifact,
+): Promise<void> {
+  await putJson(artifactKey(tenantId, meetingId, "summary.json"), summary);
+}
+
+export async function getSummaryArtifact(
+  tenantId: string,
+  meetingId: string,
+): Promise<SummaryArtifact> {
+  return getJson(artifactKey(tenantId, meetingId, "summary.json"));
+}
+
+export async function putVerification(
+  tenantId: string,
+  meetingId: string,
+  report: VerificationReport,
+): Promise<void> {
+  await putJson(artifactKey(tenantId, meetingId, "verification.json"), report);
+}
+
+export async function getVerification(
+  tenantId: string,
+  meetingId: string,
+): Promise<VerificationReport> {
+  return getJson(artifactKey(tenantId, meetingId, "verification.json"));
 }
 
 async function putJson(key: string, body: unknown): Promise<void> {

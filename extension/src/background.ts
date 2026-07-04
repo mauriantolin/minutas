@@ -1,16 +1,20 @@
 import type {
+  CaptionEvent,
   DiarizedSegment,
   MeetingFinalizeRequest,
   MeetingStartRequest,
   MeetingStartResponse,
   SegmentsAppendRequest,
+  SignalHealth,
 } from "@teams-agent-core/shared";
 import { CONFIG } from "./config.js";
 import {
   clearCapture,
+  getCaptionCheckpoint,
   getCheckpoint,
   listCaptureMetas,
   listPendingFinalizes,
+  saveCaptionCheckpoint,
   saveCaptureMeta,
   savePendingFinalize,
   type PendingFinalize,
@@ -36,6 +40,10 @@ type CaptureState = {
   // by seq, so a retry must replay identical content or appended segments get
   // silently discarded when the first send actually landed.
   inflight?: DiarizedSegment[];
+  // Final captions not yet shipped in a segments batch; same freeze semantics.
+  captionPending: CaptionEvent[];
+  captionInflight?: CaptionEvent[];
+  signalHealth?: SignalHealth;
   lastFlushAt: number;
   meetingMeta: { title: string; localUserName: string; startedAt: string };
 };
@@ -115,7 +123,7 @@ async function registerMeeting(
   }
 }
 
-async function startCapture(): Promise<void> {
+async function startCapture(): Promise<{ captionsDetected: boolean }> {
   if (await readState()) throw new Error("Capture already in progress");
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error("No active tab");
@@ -125,7 +133,7 @@ async function startCapture(): Promise<void> {
   }
 
   const idToken = await getIdToken();
-  const meetingMeta = await startInTab(tab.id);
+  const { captionsDetected, ...meetingMeta } = await startInTab(tab.id);
   const captureId = crypto.randomUUID();
 
   // Start failure is tolerated (offline start): finalize upserts by captureId later.
@@ -155,9 +163,11 @@ async function startCapture(): Promise<void> {
     meetingId,
     seq: 1,
     pending: [],
+    captionPending: [],
     lastFlushAt: Date.now(),
     meetingMeta,
   });
+  return { captionsDetected: !!captionsDetected };
 }
 
 // Segment batching: state mutations are serialized because SEGMENT_FINAL messages arrive
@@ -169,6 +179,13 @@ function withStateLock<T>(fn: () => Promise<T>): Promise<T> {
   return p;
 }
 
+// Additive fields on the segments batch (live correlation can use them later);
+// the server dedupes the whole batch by seq, captions included.
+type SegmentsAppendBody = SegmentsAppendRequest & {
+  captionTimeline?: CaptionEvent[];
+  signalHealth?: SignalHealth;
+};
+
 const onSegmentFinal = (segment: DiarizedSegment): Promise<void> =>
   withStateLock(async () => {
     const state = await readState();
@@ -178,7 +195,13 @@ const onSegmentFinal = (segment: DiarizedSegment): Promise<void> =>
       state.pending.length >= FLUSH_MAX_SEGMENTS || Date.now() - state.lastFlushAt >= FLUSH_MAX_MS;
     if (due) {
       state.inflight ??= state.pending.splice(0);
-      const body: SegmentsAppendRequest = { seq: state.seq, segments: state.inflight };
+      state.captionInflight ??= state.captionPending.splice(0);
+      const body: SegmentsAppendBody = {
+        seq: state.seq,
+        segments: state.inflight,
+        ...(state.captionInflight.length > 0 && { captionTimeline: state.captionInflight }),
+        ...(state.signalHealth && { signalHealth: state.signalHealth }),
+      };
       const ok = await api(`/meetings/${state.meetingId}/segments`, body, await getIdToken())
         .then((r) => r.ok)
         .catch(() => false);
@@ -187,9 +210,32 @@ const onSegmentFinal = (segment: DiarizedSegment): Promise<void> =>
       if (ok) {
         state.seq += 1;
         state.inflight = undefined;
+        state.captionInflight = undefined;
       }
       state.lastFlushAt = Date.now();
     }
+    if (await readState()) await writeState(state);
+  });
+
+// Captions flow content script → here (the offscreen document never sees the DOM).
+// IndexedDB keeps the full accumulated timeline so a dead tab still finalizes with it.
+const onCaptionCheckpoint = (
+  events: CaptionEvent[],
+  signalHealth: SignalHealth,
+  senderTabId: number | undefined,
+): Promise<void> =>
+  withStateLock(async () => {
+    const state = await readState();
+    if (!state || senderTabId !== state.activeTabId) return;
+    state.captionPending.push(...events);
+    state.signalHealth = signalHealth;
+    const prior = await getCaptionCheckpoint(state.captureId).catch(() => undefined);
+    await saveCaptionCheckpoint({
+      captureId: state.captureId,
+      captionTimeline: [...(prior?.captionTimeline ?? []), ...events],
+      signalHealth,
+      updatedAt: Date.now(),
+    }).catch(() => {});
     if (await readState()) await writeState(state);
   });
 
@@ -229,7 +275,7 @@ async function stopCapture(): Promise<{ meetingId?: string; error?: string }> {
 
   const content = await chrome.tabs
     .sendMessage(state.activeTabId, { type: "CAPTURE_STOP" })
-    .catch(() => ({ speakerTimeline: [], endedAt: new Date().toISOString() }));
+    .catch(() => null);
   const offscreen = await chrome.runtime
     .sendMessage({ target: "offscreen", type: "STOP" })
     .catch(() => null);
@@ -240,15 +286,22 @@ async function stopCapture(): Promise<{ meetingId?: string; error?: string }> {
     offscreen?.segments ??
     (await getCheckpoint(state.captureId).catch(() => undefined))?.segments ??
     [];
+  // Tab gone (closed mid-meeting) → fall back to the caption checkpoint; it lags the
+  // live timeline by at most one flush interval.
+  const captionCkpt = content
+    ? undefined
+    : await getCaptionCheckpoint(state.captureId).catch(() => undefined);
 
   const payload: MeetingFinalizeRequest = {
     captureId: state.captureId,
     title: state.meetingMeta.title,
     startedAt: state.meetingMeta.startedAt,
-    endedAt: content.endedAt,
+    endedAt: content?.endedAt ?? new Date().toISOString(),
     localUserName: state.meetingMeta.localUserName,
     segments,
-    speakerTimeline: content.speakerTimeline ?? [],
+    speakerTimeline: content?.speakerTimeline ?? [],
+    captionTimeline: content?.captionTimeline ?? captionCkpt?.captionTimeline ?? [],
+    signalHealth: content?.signalHealth ?? captionCkpt?.signalHealth ?? state.signalHealth,
   };
   return finalizeMeeting({
     captureId: state.captureId,
@@ -295,6 +348,7 @@ async function recoverOrphans(): Promise<void> {
         await clearCapture(meta.captureId);
         continue;
       }
+      const captions = await getCaptionCheckpoint(meta.captureId).catch(() => undefined);
       await finalizeMeeting({
         captureId: meta.captureId,
         meetingId: meta.meetingId,
@@ -306,6 +360,8 @@ async function recoverOrphans(): Promise<void> {
           localUserName: meta.localUserName,
           segments: checkpoint.segments,
           speakerTimeline: [],
+          captionTimeline: captions?.captionTimeline ?? [],
+          signalHealth: captions?.signalHealth,
         },
         updatedAt: Date.now(),
       }).catch(() => {});
@@ -326,6 +382,10 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
     void onSegmentFinal(msg.segment);
     return false;
   }
+  if (msg.type === "CAPTION_CHECKPOINT") {
+    void onCaptionCheckpoint(msg.events, msg.signalHealth, _s.tab?.id);
+    return false;
+  }
   if (msg.type === "ID_TOKEN_REFRESHED") {
     void chrome.storage.session.set({ idToken: msg.idToken });
     return false;
@@ -337,7 +397,9 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
     return true;
   }
   if (msg.type === "POPUP_START") {
-    startCapture().then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: String(e) }));
+    startCapture()
+      .then((r) => sendResponse({ ok: true, ...r }))
+      .catch((e) => sendResponse({ error: String(e) }));
     return true;
   }
   if (msg.type === "POPUP_STOP") {

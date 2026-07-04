@@ -8,6 +8,19 @@ function setCapturing(capturing: boolean) {
   show("start", !capturing);
   show("stop", capturing);
   show("cancel", capturing);
+  if (!capturing) document.getElementById("captions-hint")?.remove();
+}
+
+// Non-blocking: capture runs fine without captions, but caption coverage is the
+// cheapest speaker-fidelity signal, so nudge the user to turn them on.
+function captionsHint(captionsDetected: boolean) {
+  document.getElementById("captions-hint")?.remove();
+  if (captionsDetected) return;
+  const hint = document.createElement("div");
+  hint.id = "captions-hint";
+  hint.style.cssText = "margin-top:6px;padding:6px 8px;border-radius:6px;background:#fff4d6;color:#6b5200";
+  hint.textContent = "Activá los subtítulos en vivo de Teams para mejorar la precisión de hablantes";
+  $("capture").appendChild(hint);
 }
 
 async function enterCaptureView() {
@@ -64,6 +77,7 @@ $("start").addEventListener("click", async () => {
   const res = await chrome.runtime.sendMessage({ type: "POPUP_START" });
   if (res?.error) return status(`Error: ${res.error}`);
   setCapturing(true);
+  captionsHint(!!res.captionsDetected);
   status("Capturing… keep the meeting tab open.");
 });
 

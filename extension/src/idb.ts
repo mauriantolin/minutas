@@ -1,13 +1,18 @@
-import type { DiarizedSegment, MeetingFinalizeRequest } from "@teams-agent-core/shared";
+import type {
+  CaptionEvent,
+  DiarizedSegment,
+  MeetingFinalizeRequest,
+  SignalHealth,
+} from "@teams-agent-core/shared";
 
 // Crash-recovery storage shared by the offscreen document and the service worker.
 // IndexedDB is the only durable store both contexts can reach: chrome.storage.* is not
 // available inside MV3 offscreen documents, and both run on the same extension origin.
 
 const DB_NAME = "capture-recovery";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
-const STORES = ["captures", "checkpoints", "pending-finalize"] as const;
+const STORES = ["captures", "checkpoints", "caption-checkpoints", "pending-finalize"] as const;
 type StoreName = (typeof STORES)[number];
 
 export interface CaptureMeta {
@@ -21,6 +26,15 @@ export interface CaptureMeta {
 export interface SegmentCheckpoint {
   captureId: string;
   segments: DiarizedSegment[];
+  updatedAt: number;
+}
+
+// Written by the service worker (captions arrive from the content script, not the
+// offscreen document) — a separate store so offscreen segment puts never clobber it.
+export interface CaptionCheckpoint {
+  captureId: string;
+  captionTimeline: CaptionEvent[];
+  signalHealth: SignalHealth;
   updatedAt: number;
 }
 
@@ -74,6 +88,12 @@ export const saveCheckpoint = (checkpoint: SegmentCheckpoint) =>
 
 export const getCheckpoint = (captureId: string) =>
   run<SegmentCheckpoint | undefined>("checkpoints", "readonly", (s) => s.get(captureId));
+
+export const saveCaptionCheckpoint = (checkpoint: CaptionCheckpoint) =>
+  run<unknown>("caption-checkpoints", "readwrite", (s) => s.put(checkpoint));
+
+export const getCaptionCheckpoint = (captureId: string) =>
+  run<CaptionCheckpoint | undefined>("caption-checkpoints", "readonly", (s) => s.get(captureId));
 
 export const savePendingFinalize = (record: PendingFinalize) =>
   run<unknown>("pending-finalize", "readwrite", (s) => s.put(record));

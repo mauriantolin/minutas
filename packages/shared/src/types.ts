@@ -70,6 +70,20 @@ export interface SpeakerTimelineEntry {
   participantName: string;
 }
 
+/**
+ * One live-caption utterance scraped from the Teams caption pane (captured
+ * on-mutation — Teams virtualizes and prunes old caption nodes).
+ */
+export interface CaptionEvent {
+  /** Seconds from capture start. */
+  t: number;
+  /** Native per-utterance display name — strictly better than the speaker ring. */
+  speakerName: string;
+  text: string;
+  /** True once Teams finalized the utterance (partials mutate in place). */
+  final: boolean;
+}
+
 /** A segment after correlating diarization with the active-speaker timeline. */
 export interface LabeledSegment {
   /** Resolved real name, or the raw speaker label when correlation was inconclusive. */
@@ -79,6 +93,32 @@ export interface LabeledSegment {
   startTime: number;
   endTime: number;
   text: string;
+}
+
+/** Which signal decided a segment's speaker in correlation v2. */
+export type SpeakerLabelSource = "mic" | "caption" | "timeline" | "unresolved";
+
+/**
+ * P2 v2 output segment (`transcript.labeled.json`): stable id + numeric
+ * confidence. Extends LabeledSegment so v1 consumers keep working unchanged.
+ */
+export interface CorrelatedSegment extends LabeledSegment {
+  /** Stable id (`s{n}` in raw-payload order) — survives every downstream rewrite. */
+  segId: string;
+  source: AudioSource;
+  labelSource: SpeakerLabelSource;
+  /** 0–1: caption match score / vote share; 1 for mic; 0 when unresolved. */
+  speakerConfidence: number;
+  /** Winner-vs-runner-up margin of the decision that labeled this segment, 0–1. */
+  labelMargin: number;
+  /** ASR confidence carried over from the diarized segment when present. */
+  asrConfidence?: number;
+}
+
+/** Full P2 v2 output: labeled segments plus the Gate A score inputs. */
+export interface CorrelationResult {
+  segments: CorrelatedSegment[];
+  scores: CorrelationScores;
 }
 
 /**
@@ -147,8 +187,25 @@ export interface VerificationScores {
   supported: number;
   partial: number;
   unsupported: number;
+  /** UNCERTAIN verdicts; Gate E counts them like `partial`, never as unsupported. */
+  uncertain?: number;
   /** unsupported / claims, 0–1. */
   unsupportedRate: number;
+  /** Claims with critical=true and verdict UNSUPPORTED — the Gate E absolute floor. */
+  criticalUnsupported?: number;
+}
+
+/** Programmatic escalation gates (§2 of the architecture doc). */
+export type GateId = "gate0" | "gateA" | "gateB" | "gateC" | "gateD" | "gateE";
+
+/** One gate evaluation; a gate may re-appear after a repair/re-verify loop. */
+export interface GateDecision {
+  gate: GateId;
+  fired: boolean;
+  /** ISO-8601 UTC. */
+  decidedAt: string;
+  /** Trigger detail, e.g. "unresolvedPct 22.0 > 15". */
+  reason?: string;
 }
 
 /** Gate scores accumulate as phases complete — each is absent until its phase ran. */
@@ -157,6 +214,10 @@ export interface PipelineScores {
   asr?: AsrScores;
   invariants?: InvariantScores;
   verification?: VerificationScores;
+  /** Gate evaluations in execution order — the per-meeting escalation audit trail. */
+  gates?: GateDecision[];
+  /** Highest model tier actually used per LLM phase (P4–P8). */
+  tierByPhase?: Partial<Record<PipelinePhase, ModelTier>>;
 }
 
 /** Gate B task-token lookup: the Transcribe job-state event carries only the job name. */
@@ -190,6 +251,8 @@ export interface MeetingIngestPayload {
   endedAt: string;
   segments: DiarizedSegment[];
   speakerTimeline: SpeakerTimelineEntry[];
+  /** Live-caption utterances when captions were on — primary P2 signal. */
+  captionTimeline?: CaptionEvent[];
   /** Display name of the local user (mic source resolves to this). */
   localUserName: string;
 }
@@ -257,6 +320,107 @@ export interface MeetingReprocessRequest {
 export interface MeetingReprocessResponse {
   meetingId: string;
   executionArn: string;
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline artifacts (P4–P8): clean transcript, extraction, summary, verification.
+// Every cross-reference keys by stable id — never by array index (§4 anchor rule).
+// ---------------------------------------------------------------------------
+
+/** Chapter marker inserted by P4 (`## [mm:ss] Topic`). */
+export interface ChapterMarker {
+  /** Seconds from capture start. */
+  startTime: number;
+  title: string;
+}
+
+/**
+ * One merged same-speaker turn in the clean transcript. `id` is the target of
+ * `[Tn]` anchors (id === `T{n}`); `sourceIds` trace back to P2 segIds so user
+ * edits/tags/highlights survive every rewrite and reprocess.
+ */
+export interface CleanTurn {
+  id: string;
+  sourceIds: string[];
+  speaker: string;
+  startTime: number;
+  endTime: number;
+  text: string;
+  /** Free-form tags (pipeline- or user-applied), e.g. "decision", "highlight". */
+  tags: string[];
+}
+
+/** P4 output (`transcript.clean.json`) — the canonical artifact GET serves. */
+export interface CleanTranscript {
+  turns: CleanTurn[];
+  chapters: ChapterMarker[];
+}
+
+/** Base of every extracted item: quote + turn ref make Gate D and P7 mechanical. */
+export interface ExtractedItem {
+  text: string;
+  /** Verbatim transcript quote backing the item; fuzzy-checked by Gate D. */
+  verbatimQuote: string;
+  /** CleanTurn id (or segId when grounded on raw) the quote came from. */
+  turnId: string;
+  /** True when the value was inferred rather than stated explicitly. */
+  inferred: boolean;
+}
+
+export interface ExtractedActionItem extends ExtractedItem {
+  /** Only when explicitly attributed in the meeting. */
+  owner?: string;
+  /** ISO-8601 date; only when explicitly stated. */
+  due?: string;
+  done: boolean;
+}
+
+/** P5 output (`extraction.json`), after Gate D quote validation. */
+export interface ExtractionResult {
+  decisions: ExtractedItem[];
+  actionItems: ExtractedActionItem[];
+  openQuestions: ExtractedItem[];
+  keyNumbers: ExtractedItem[];
+  participants: string[];
+}
+
+/**
+ * P6 draft / P8 published summary (`summary.json`). `text` is Markdown where
+ * every substantive claim carries a `[Tn]` anchor resolving to a CleanTurn id —
+ * the web renders anchors as links, never as literal text.
+ */
+export interface SummaryArtifact {
+  text: string;
+  /** Turn ids referenced by anchors in `text` (parsed once, served to the web). */
+  anchoredTurnIds: string[];
+  /** Tier that produced this draft (Gate C choice / Gate E ladder). */
+  tier: ModelTier;
+}
+
+export type VerificationVerdict =
+  | "SUPPORTED"
+  | "PARTIAL"
+  | "UNSUPPORTED"
+  | "UNCERTAIN";
+
+/** One atomic claim decomposed from the summary and judged in P7. */
+export interface VerifiedClaim {
+  claim: string;
+  verdict: VerificationVerdict;
+  /** Supporting transcript quote; absent on UNSUPPORTED. */
+  quote?: string;
+  /** Turn id of the supporting quote; absent on UNSUPPORTED. */
+  turnId?: string;
+  /** True when the claim touches keyNumbers/actionItems/decisions (Gate E floor). */
+  critical: boolean;
+}
+
+/** P7 output (`verification.json`) — the per-meeting fidelity audit trail. */
+export interface VerificationReport {
+  claims: VerifiedClaim[];
+  scores: VerificationScores;
+  /** Transcript the claims were judged against (P4 invariant gate may demote to raw). */
+  groundedOn: "clean" | "raw";
 }
 
 export interface ActionItem {
