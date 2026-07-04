@@ -10,28 +10,43 @@ transcripciones, resúmenes y action items generados por un agente Claude en Bed
 ```
 Extensión Chrome (MV3)                 AWS (sandbox 471446759294 / us-east-1)
  ├ tabCapture (otros) ─┐               ┌ API Gateway (JWT authorizer)
- ├ getUserMedia (vos) ─┼─► Transcribe  │   POST /meetings      → ingest Lambda
- │   (creds Identity Pool, directo)    │     · correlación Speaker↔nombre
- ├ content script ─────► timeline      │     · Bedrock (Claude) → resumen
- │   (hablante activo del DOM)         │   GET  /meetings[/id]  → lectura
- └ POST transcript ────────────────────►  POST /meetings/{id}/ask → Q&A
-                                        ├ DynamoDB (multitenant PK/SK) + S3
-                                        └ S3 + CloudFront → dashboard Next.js
+ ├ getUserMedia (vos) ─┼─► Transcribe  │  POST /meetings            → start (captura)
+ │   (creds Identity Pool, directo)    │  POST /meetings/{id}/segments → checkpoint/live
+ ├ captions + timeline (DOM) ──┐       │  POST /meetings/{id}/finalize → Step Function
+ ├ widget in-meeting (tags) ───┤       │  POST /meetings/{id}/reprocess · /ask (Q&A)
+ ├ audio opt-in → OPFS ────────┤       │  GET  /meetings[/id]        → lectura
+ └ segmentos + finalize ───────┴──────►│
+                                       ├ MeetingPipeline (SFN Standard):
+                                       │   correlate → gates → clean → extract →
+                                       │   synthesize → verify → (repair/escalate) → publish
+                                       ├ Bedrock (Haiku default; Sonnet/Opus solo si un
+                                       │   gate lo exige; prompt caching entre fases)
+                                       ├ Transcribe batch re-ASR (solo consent tier 2)
+                                       ├ DynamoDB + S3 (SSE-KMS) · CloudWatch alarms
+                                       └ S3 + CloudFront → dashboard Next.js + shadcn/ui
 ```
 
-El **audio nunca toca el backend**: la extensión habla directo con Transcribe usando
-credenciales temporales de un Cognito Identity Pool scoped solo a `StartStreamTranscription`.
-Solo el texto del transcript llega a AWS.
+Pipeline por fases con gates programáticos (ver `docs/architecture-pipeline.md`): cada
+resumen se **verifica claim-por-claim** contra el transcript; si no verifica escala
+(repair → Sonnet → Opus) y si aun así falla publica como `needs_review`, nunca como
+verdad silenciosa. Estados: `capturing → processing → ready | needs_review`.
+
+El **audio nunca toca el backend por default**: la extensión habla directo con Transcribe
+con credenciales del Identity Pool. Grabación local (OPFS) y re-transcripción batch de
+alta fidelidad solo con consentimiento explícito por reunión (escalera de 3 tiers,
+lifecycle de 7 días, KMS).
+
+**Diseño:** `docs/architecture-pipeline.md` (pipeline) · `docs/ui-spec.md` (UI).
 
 ## Workspaces
 
 | Path | Qué es |
 |------|--------|
-| `packages/shared` | Tipos + `correlateSpeakers` (núcleo: mapea diarización → nombres). Tests: `npm test -w @teams-agent-core/shared` |
-| `backend` | Lambdas: ingest (correlación + resumen), lectura, Q&A. Agente en `src/lib/agent.ts` (Bedrock Converse) |
-| `infra` | CDK: Cognito, API Gateway, DynamoDB, S3, CloudFront, Lambdas |
-| `extension` | Chrome MV3: captura + `teams-dom-adapter` + Transcribe + auth. Build: `npm run build -w @teams-agent-core/extension` |
-| `web` | Dashboard Next.js (static export) |
+| `packages/shared` | Tipos + `correlateSpeakersV2` (captions/anchors + votación por ventanas) + fuzzy quote matching. Tests: `npm test -w @teams-agent-core/shared` |
+| `backend` | Lambdas: lifecycle API, worker de pipeline (`src/handlers/pipeline.ts`, fases P2–P8), Q&A. Cliente Bedrock tiered en `src/lib/agent.ts` |
+| `infra` | CDK: Cognito, API GW, DynamoDB, S3 (KMS), CloudFront (+function de rutas), Step Function `MeetingPipeline`, EventBridge (Transcribe callback), alarms |
+| `extension` | Chrome MV3: captura + captions + VAD + checkpoints IndexedDB + audio opt-in OPFS + widget in-meeting. Build: `npm run build -w @teams-agent-core/extension` |
+| `web` | Dashboard Next.js static export + Tailwind v4 + shadcn/ui (rutas: `/meetings`, `/meeting?id=`, `/live?id=`, `/kits`, `/settings`) |
 
 ## Recursos desplegados (sandbox)
 
