@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "types": ["node", "aws-lambda"]
+  },
+  "references": [{ "path": "../packages/shared" }],
+  "include": ["src/**/*"]
+}

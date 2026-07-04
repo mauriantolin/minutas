@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Teams Meeting Assistant",
+  "version": "0.1.0",
+  "description": "Transcribes your Microsoft Teams meetings and syncs summaries to your workspace.",
+  "permissions": ["tabCapture", "offscreen", "storage", "scripting", "activeTab"],
+  "host_permissions": [
+    "https://teams.microsoft.com/*",
+    "https://*.teams.microsoft.com/*",
+    "https://teams.cloud.microsoft/*",
+    "https://*.cloud.microsoft/*",
+    "https://teams.live.com/*"
+  ],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "Teams Assistant" },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://teams.microsoft.com/*",
+        "https://*.teams.microsoft.com/*",
+        "https://teams.cloud.microsoft/*",
+        "https://*.cloud.microsoft/*",
+        "https://teams.live.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

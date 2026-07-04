@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Permiso de micrófono</title>
+    <style>
+      body {
+        font: 15px system-ui;
+        margin: 0;
+        display: flex;
+        min-height: 100vh;
+        align-items: center;
+        justify-content: center;
+        background: #f3f3f8;
+        color: #1b1b28;
+      }
+      .card {
+        background: #fff;
+        border-radius: 14px;
+        box-shadow: 0 6px 30px #0002;
+        padding: 32px 36px;
+        max-width: 460px;
+        text-align: center;
+      }
+      h1 { font-size: 18px; margin: 0 0 12px; }
+      p { line-height: 1.5; color: #444; }
+      #status { margin-top: 18px; font-weight: 600; }
+      .ok { color: #157347; }
+      .err { color: #b02a37; }
+      button {
+        margin-top: 18px;
+        padding: 10px 20px;
+        border: 0;
+        border-radius: 8px;
+        background: #5b5fc7;
+        color: #fff;
+        font: inherit;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>🎙️ Permiso de micrófono</h1>
+      <p>
+        Aceptá el pedido de micrófono de Chrome para que la extensión pueda
+        grabar tu voz en las reuniones. Solo hace falta una vez.
+      </p>
+      <div id="status">Solicitando acceso…</div>
+      <button id="retry" style="display: none">Reintentar</button>
+    </div>
+    <script type="module" src="permission.js"></script>
+  </body>
+</html>

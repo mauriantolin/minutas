@@ -1,0 +1,21 @@
+{
+  "name": "@teams-agent-core/infra",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": { "infra": "bin/app.ts" },
+  "scripts": {
+    "synth": "cdk synth",
+    "deploy": "cdk deploy",
+    "diff": "cdk diff"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.170.0",
+    "constructs": "^10.4.0"
+  },
+  "devDependencies": {
+    "aws-cdk": "^2.170.0",
+    "esbuild": "^0.24.0",
+    "tsx": "^4.19.0"
+  }
+}

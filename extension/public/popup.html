@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { font: 13px system-ui; width: 260px; margin: 0; padding: 14px; }
+      h1 { font-size: 14px; margin: 0 0 10px; }
+      input, button { width: 100%; box-sizing: border-box; margin: 4px 0; padding: 8px; }
+      button { cursor: pointer; border: 0; border-radius: 6px; background: #5b5fc7; color: #fff; }
+      button.stop { background: #c74343; }
+      .hidden { display: none; }
+      #status { margin-top: 8px; color: #555; min-height: 16px; }
+    </style>
+  </head>
+  <body>
+    <h1>Teams Meeting Assistant</h1>
+    <div id="login">
+      <input id="email" type="email" placeholder="Email" />
+      <input id="password" type="password" placeholder="Password" />
+      <button id="signin">Sign in</button>
+    </div>
+    <div id="capture" class="hidden">
+      <button id="start">● Start capturing</button>
+      <button id="stop" class="stop hidden">■ Stop & summarize</button>
+      <button id="cancel" class="hidden" style="background:#888">Discard capture</button>
+    </div>
+    <div id="status"></div>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

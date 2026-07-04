@@ -1,0 +1,19 @@
+{
+  "name": "@teams-agent-core/extension",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch"
+  },
+  "dependencies": {
+    "@teams-agent-core/shared": "*",
+    "@aws-sdk/client-transcribe-streaming": "^3.700.0",
+    "@aws-sdk/credential-provider-cognito-identity": "^3.700.0",
+    "amazon-cognito-identity-js": "^6.3.12"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

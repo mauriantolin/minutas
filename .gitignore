@@ -1,0 +1,27 @@
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
+
+# CDK
+infra/cdk.out/
+infra/.cdk.staging/
+cdk.context.json
+
+# Next.js
+web/.next/
+web/out/
+
+# Chrome extension build
+extension/dist/
+*.zip
+
+# Claude local overrides
+.claude/settings.local.json
+
+# Logs / OS
+*.log
+.DS_Store
