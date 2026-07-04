@@ -460,6 +460,9 @@ async function stopCapture(): Promise<{
     speakerTimeline: content?.speakerTimeline ?? [],
     captionTimeline: content?.captionTimeline ?? captionCkpt?.captionTimeline ?? [],
     ...(content?.highlights?.length && { highlights: content.highlights }),
+    ...(content?.participantNames?.length && {
+      participantNames: content.participantNames,
+    }),
     signalHealth,
     ...audioDeclaration,
   };

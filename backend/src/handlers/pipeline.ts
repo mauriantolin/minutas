@@ -359,7 +359,14 @@ export const handler = async (
               )
               .map((s) => s.segId)
           : undefined;
-        const participantNames = meeting.participants.map((p) => p.name);
+        // Correlated speakers plus DOM-sampled roster: names the correlation never
+        // attributed (silent attendees, minimized-call gaps) still reach the prompt.
+        const participantNames = [
+          ...new Set([
+            ...meeting.participants.map((p) => p.name),
+            ...(rawPayload.participantNames ?? []),
+          ]),
+        ];
 
         let draft = await generateCleanTranscript({
           tier: event.modelTier ?? "haiku",

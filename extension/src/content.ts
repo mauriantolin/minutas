@@ -5,6 +5,7 @@ import {
   readActiveSpeaker,
   readMeetingTitle,
   readLocalUserName,
+  readParticipants,
 } from "./teams-dom-adapter.js";
 import { mountWidget, type LiveWidget, type TagId } from "./widget.js";
 
@@ -25,6 +26,8 @@ let captionFlushTimer: number | undefined;
 let captionFlushMark = 0;
 let domReadCount = 0;
 let speakerRingSeen = false;
+let participants = new Set<string>();
+let tickCount = 0;
 let captionHeartbeatLastT: number | undefined;
 let healthDirty = false;
 
@@ -57,8 +60,13 @@ function flushCaptions() {
 }
 
 function tick() {
+  // Roster/nametag sampling is heavier than the ring read — every ~4 s is plenty.
+  if (tickCount++ % 10 === 0) {
+    for (const n of readParticipants()) participants.add(n);
+  }
   const name = readActiveSpeaker();
   if (!name) return;
+  participants.add(name);
   domReadCount += 1;
   // Every successful ring read refreshes health, so captions-off meetings keep
   // checkpointing an accurate domReadCount instead of freezing at the first one.
@@ -100,6 +108,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     captionFlushMark = 0;
     domReadCount = 0;
     speakerRingSeen = false;
+    participants = new Set();
+    tickCount = 0;
     captionHeartbeatLastT = undefined;
     healthDirty = false;
     lastName = null;
@@ -136,10 +146,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (lastName) timeline.push({ t: nowT(), participantName: lastName });
     widget?.destroy();
     widget = null;
+    if (localUserName && localUserName !== "Yo") participants.add(localUserName);
     sendResponse({
       speakerTimeline: timeline,
       captionTimeline,
       highlights,
+      participantNames: [...participants],
       signalHealth: signalHealth(),
       endedAt: new Date().toISOString(),
     });

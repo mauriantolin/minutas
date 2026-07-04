@@ -392,6 +392,11 @@ export interface MeetingIngestPayload {
   localUserName: string;
   /** Widget tag taps during capture — P4 anchors them onto clean turns. */
   highlights?: HighlightTap[];
+  /**
+   * Display names sampled from the DOM during capture (stage nametags + roster
+   * pane). Name vocabulary for correlation/cleanup — not an attendance record.
+   */
+  participantNames?: string[];
 }
 
 // ---------------------------------------------------------------------------
