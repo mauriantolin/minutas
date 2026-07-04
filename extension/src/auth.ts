@@ -2,6 +2,7 @@ import {
   CognitoUserPool,
   CognitoUser,
   AuthenticationDetails,
+  type CognitoUserSession,
 } from "amazon-cognito-identity-js";
 import { fromCognitoIdentityPool } from "@aws-sdk/credential-provider-cognito-identity";
 import type { AwsCredentialIdentity } from "@aws-sdk/types";
@@ -29,6 +30,24 @@ export function currentIdToken(): Promise<string | null> {
   return new Promise((resolve) => {
     user.getSession((err: unknown, session: { getIdToken(): { getJwtToken(): string } } | null) => {
       resolve(err || !session ? null : session.getIdToken().getJwtToken());
+    });
+  });
+}
+
+/**
+ * Force a token refresh regardless of remaining validity. `getSession` returns the cached
+ * idToken until it actually expires (60 min), so mid-meeting rotation at ~50 min must go
+ * through `refreshSession` to get a fresh 60-min token before the old one dies mid-stream.
+ */
+export function forceRefreshIdToken(): Promise<string | null> {
+  const user = pool.getCurrentUser();
+  if (!user) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    user.getSession((err: unknown, session: CognitoUserSession | null) => {
+      if (err || !session) return resolve(null);
+      user.refreshSession(session.getRefreshToken(), (err2: unknown, fresh: CognitoUserSession | null) => {
+        resolve(err2 || !fresh ? null : fresh.getIdToken().getJwtToken());
+      });
     });
   });
 }

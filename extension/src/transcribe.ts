@@ -52,13 +52,20 @@ export async function* transcribeStream(
       const speakerLabel = alt.Items?.[0]?.Speaker ?? (source === "mic" ? "me" : "spk_0");
       onResult?.({ source, speakerLabel, text: alt.Transcript, isPartial: !!result.IsPartial });
       if (result.IsPartial) continue;
-      yield {
+      const seg: DiarizedSegment = {
         source,
         speakerLabel,
         startTime: result.StartTime ?? 0,
         endTime: result.EndTime ?? 0,
         text: alt.Transcript,
       };
+      const confidences = (alt.Items ?? [])
+        .map((i) => i.Confidence)
+        .filter((c): c is number => c !== undefined);
+      if (confidences.length) {
+        seg.confidence = confidences.reduce((a, c) => a + c, 0) / confidences.length;
+      }
+      yield seg;
     }
   }
 }

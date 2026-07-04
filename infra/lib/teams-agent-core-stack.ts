@@ -28,6 +28,16 @@ import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { Runtime } from "aws-cdk-lib/aws-lambda";
 import {
+  Choice,
+  Condition,
+  DefinitionBody,
+  Fail,
+  JsonPath,
+  StateMachine,
+  TaskInput,
+} from "aws-cdk-lib/aws-stepfunctions";
+import { LambdaInvoke } from "aws-cdk-lib/aws-stepfunctions-tasks";
+import {
   Distribution,
   ViewerProtocolPolicy,
 } from "aws-cdk-lib/aws-cloudfront";
@@ -125,17 +135,159 @@ export class TeamsAgentCoreStack extends Stack {
       resources: ["*"],
     });
 
+    // --- Async pipeline: one worker Lambda + MeetingPipeline state machine ---
+    const modelHaiku = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+    const modelSonnet = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
+    const modelOpus = "us.anthropic.claude-opus-4-5-20251101-v1:0";
+    // Cross-region inference profiles route to regional foundation models, so
+    // InvokeModel needs both the profile ARN and the underlying model ARNs.
+    const bedrockModelAccess = new PolicyStatement({
+      actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+      resources: [modelHaiku, modelSonnet, modelOpus].flatMap((id) => [
+        `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${id}`,
+        `arn:aws:bedrock:*::foundation-model/${id.replace(/^us\./, "")}`,
+      ]),
+    });
+
+    const pipelineWorker = new NodejsFunction(this, "PipelineWorkerFn", {
+      entry: path.join(BACKEND_SRC, "handlers", "pipeline.ts"),
+      runtime: Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(300),
+      memorySize: 512,
+      environment: {
+        TABLE_NAME: table.tableName,
+        TRANSCRIPT_BUCKET: transcripts.bucketName,
+        // agent.ts resolves its model from BEDROCK_MODEL_ID; keep it in lockstep
+        // with the IAM policy above so a model bump can't outrun the policy.
+        BEDROCK_MODEL_ID: modelHaiku,
+        MODEL_HAIKU: modelHaiku,
+        MODEL_SONNET: modelSonnet,
+        MODEL_OPUS: modelOpus,
+      },
+      bundling,
+    });
+    table.grantReadWriteData(pipelineWorker);
+    transcripts.grantReadWrite(pipelineWorker);
+    pipelineWorker.addToRolePolicy(bedrockModelAccess);
+
+    const workerTask = (id: string, phase: string, resultPath: string) => {
+      const task = new LambdaInvoke(this, id, {
+        lambdaFunction: pipelineWorker,
+        payload: TaskInput.fromObject({
+          tenantId: JsonPath.stringAt("$.tenantId"),
+          meetingId: JsonPath.stringAt("$.meetingId"),
+          executionArn: JsonPath.stringAt("$$.Execution.Id"),
+          phase,
+        }),
+        payloadResponseOnly: true,
+        resultPath,
+      });
+      task.addRetry({
+        errors: ["States.ALL"],
+        maxAttempts: 2,
+        interval: Duration.seconds(3),
+        backoffRate: 2,
+      });
+      return task;
+    };
+
+    const setError = new LambdaInvoke(this, "SetError", {
+      lambdaFunction: pipelineWorker,
+      payload: TaskInput.fromObject({
+        tenantId: JsonPath.stringAt("$.tenantId"),
+        meetingId: JsonPath.stringAt("$.meetingId"),
+        executionArn: JsonPath.stringAt("$$.Execution.Id"),
+        phase: "fail",
+        error: JsonPath.objectAt("$.error"),
+      }),
+      payloadResponseOnly: true,
+      resultPath: JsonPath.DISCARD,
+    });
+    // Without retries a transient invoke failure here would end the execution
+    // with the meeting stuck in "processing" and no lastError written.
+    setError.addRetry({
+      errors: ["States.ALL"],
+      maxAttempts: 2,
+      interval: Duration.seconds(3),
+      backoffRate: 2,
+    });
+    setError.next(new Fail(this, "PipelineFailed"));
+
+    const correlate = workerTask("Correlate", "correlate", "$.correlate");
+    const asrScore = workerTask("AsrScore", "asrScore", "$.asrScore");
+    const publish = workerTask("Publish", "publish", JsonPath.DISCARD);
+    for (const task of [correlate, asrScore, publish]) {
+      task.addCatch(setError, { resultPath: "$.error" });
+    }
+
+    // Gate thresholds are baked into the Choice states at synth time; both
+    // branches continue for now — real routing lands with the M3 gates.
+    const gateAMaxUnresolvedPct = Number(
+      process.env.GATE_A_MAX_UNRESOLVED_PCT ?? "15",
+    );
+    const gateAMinLabelMargin = Number(
+      process.env.GATE_A_MIN_LABEL_MARGIN ?? "0.3",
+    );
+    const gateCMinMeanConfidence = Number(
+      process.env.GATE_C_MIN_MEAN_CONFIDENCE ?? "0.8",
+    );
+
+    const gateA = new Choice(this, "GateA")
+      .when(
+        Condition.or(
+          Condition.and(
+            Condition.isPresent("$.correlate.scores.correlation.unresolvedPct"),
+            Condition.numberGreaterThan(
+              "$.correlate.scores.correlation.unresolvedPct",
+              gateAMaxUnresolvedPct,
+            ),
+          ),
+          Condition.and(
+            Condition.isPresent("$.correlate.scores.correlation.labelMarginMin"),
+            Condition.numberLessThan(
+              "$.correlate.scores.correlation.labelMarginMin",
+              gateAMinLabelMargin,
+            ),
+          ),
+        ),
+        asrScore,
+      )
+      .otherwise(asrScore);
+
+    const gateC = new Choice(this, "GateC")
+      .when(
+        Condition.and(
+          Condition.isPresent("$.asrScore.scores.asr.meanConfidence"),
+          Condition.numberLessThan(
+            "$.asrScore.scores.asr.meanConfidence",
+            gateCMinMeanConfidence,
+          ),
+        ),
+        publish,
+      )
+      .otherwise(publish);
+
+    correlate.next(gateA);
+    asrScore.next(gateC);
+
+    const pipeline = new StateMachine(this, "MeetingPipeline", {
+      definitionBody: DefinitionBody.fromChainable(correlate),
+      timeout: Duration.hours(2),
+    });
+
     const ingest = new NodejsFunction(this, "IngestFn", {
       entry: path.join(BACKEND_SRC, "handlers", "ingest.ts"),
       runtime: Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(120),
+      timeout: Duration.seconds(15),
       memorySize: 512,
-      environment: fnEnv,
+      environment: { ...fnEnv, STATE_MACHINE_ARN: pipeline.stateMachineArn },
       bundling,
     });
-    table.grantWriteData(ingest);
+    table.grantReadWriteData(ingest);
     transcripts.grantPut(ingest);
-    ingest.addToRolePolicy(bedrockInvoke);
+    pipeline.grantStartExecution(ingest);
+    // Reprocess must 409 on an already-running execution.
+    pipeline.grantRead(ingest);
 
     // Read + Q&A over stored meetings.
     const meetingsGet = new NodejsFunction(this, "MeetingsGetFn", {
@@ -169,7 +321,10 @@ export class TeamsAgentCoreStack extends Stack {
       environment: fnEnv,
       bundling,
     });
-    table.grantWriteData(meetingsDelete);
+    // Prefix delete reads the meeting item, queries SEGS# chunks and lists the
+    // S3 prefix before deleting.
+    table.grantReadWriteData(meetingsDelete);
+    transcripts.grantRead(meetingsDelete);
     transcripts.grantDelete(meetingsDelete);
 
     const authorizer = new HttpJwtAuthorizer(
@@ -189,6 +344,24 @@ export class TeamsAgentCoreStack extends Stack {
       path: "/meetings",
       methods: [HttpMethod.POST],
       integration: new HttpLambdaIntegration("IngestIntegration", ingest),
+      authorizer,
+    });
+    api.addRoutes({
+      path: "/meetings/{id}/segments",
+      methods: [HttpMethod.POST],
+      integration: new HttpLambdaIntegration("SegmentsIntegration", ingest),
+      authorizer,
+    });
+    api.addRoutes({
+      path: "/meetings/{id}/finalize",
+      methods: [HttpMethod.POST],
+      integration: new HttpLambdaIntegration("FinalizeIntegration", ingest),
+      authorizer,
+    });
+    api.addRoutes({
+      path: "/meetings/{id}/reprocess",
+      methods: [HttpMethod.POST],
+      integration: new HttpLambdaIntegration("ReprocessIntegration", ingest),
       authorizer,
     });
     api.addRoutes({

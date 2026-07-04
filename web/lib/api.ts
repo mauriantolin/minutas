@@ -13,17 +13,46 @@ async function req(token: string, path: string, init?: RequestInit) {
   return res.json();
 }
 
+export type MeetingStatus =
+  | "capturing"
+  | "processing"
+  | "ready"
+  | "needs_review"
+  | "failed";
+
+export type PipelinePhase =
+  | "INGESTED"
+  | "CORRELATED"
+  | "ASR_SCORED"
+  | "CLEANED"
+  | "EXTRACTED"
+  | "DRAFTED"
+  | "VERIFIED"
+  | "PUBLISHED";
+
+export interface PipelineState {
+  phase: PipelinePhase;
+  tier: "haiku" | "sonnet" | "opus";
+  attempts: number;
+  lastError?: string;
+}
+
 export interface Meeting {
   meetingId: string;
   title: string;
   startedAt: string;
-  status: string;
+  endedAt?: string;
+  // string fallback: legacy records predate the status machine
+  status: MeetingStatus | (string & {});
   participants: { name: string }[];
+  pipeline?: PipelineState;
 }
 
 export interface Segment {
+  segId?: string;
   speaker: string;
   startTime: number;
+  endTime?: number;
   text: string;
 }
 
@@ -43,3 +72,6 @@ export const askMeeting = (t: string, id: string, question: string): Promise<{ a
 
 export const deleteMeeting = (t: string, id: string): Promise<{ deleted: string }> =>
   req(t, `/meetings/${id}`, { method: "DELETE" });
+
+export const reprocessMeeting = (t: string, id: string): Promise<{ meetingId: string; executionArn: string }> =>
+  req(t, `/meetings/${id}/reprocess`, { method: "POST", body: JSON.stringify({}) });
