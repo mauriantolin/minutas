@@ -8,8 +8,46 @@ function setCapturing(capturing: boolean) {
   show("start", !capturing);
   show("stop", capturing);
   show("cancel", capturing);
+  document.getElementById("consent-row")?.classList.toggle("hidden", capturing);
   if (!capturing) document.getElementById("captions-hint")?.remove();
 }
+
+// Consent ladder (§7), chosen per meeting before Start. Injected here because the
+// static popup.html stays minimal; the last choice persists as the default.
+const CONSENT_OPTIONS: [string, string][] = [
+  ["0", "Sin grabación"],
+  ["1", "Buffer local"],
+  ["2", "Subir para re-transcripción (máx. fidelidad)"],
+];
+
+async function buildConsentRow() {
+  if (document.getElementById("consent-row")) return;
+  const row = document.createElement("div");
+  row.id = "consent-row";
+  const label = document.createElement("label");
+  label.htmlFor = "consent";
+  label.textContent = "Audio de la reunión";
+  label.style.cssText = "display:block;margin-top:2px;color:#555";
+  const select = document.createElement("select");
+  select.id = "consent";
+  select.style.cssText = "width:100%;box-sizing:border-box;margin:4px 0;padding:8px";
+  for (const [value, text] of CONSENT_OPTIONS) {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = text;
+    select.appendChild(opt);
+  }
+  const { consentTierPref } = await chrome.storage.local.get("consentTierPref");
+  select.value = String(consentTierPref ?? 0);
+  select.addEventListener("change", () =>
+    void chrome.storage.local.set({ consentTierPref: Number(select.value) }),
+  );
+  row.append(label, select);
+  $("capture").insertBefore(row, $("start"));
+}
+
+const consentTier = (): number =>
+  Number((document.getElementById("consent") as HTMLSelectElement | null)?.value ?? 0);
 
 // Non-blocking: capture runs fine without captions, but caption coverage is the
 // cheapest speaker-fidelity signal, so nudge the user to turn them on.
@@ -26,6 +64,7 @@ function captionsHint(captionsDetected: boolean) {
 async function enterCaptureView() {
   $("login").classList.add("hidden");
   $("capture").classList.remove("hidden");
+  await buildConsentRow();
   // Reflect whatever the background is actually doing — survives popup close / SW restart.
   const state = await chrome.runtime.sendMessage({ type: "GET_STATE" });
   setCapturing(!!state?.capturing);
@@ -74,7 +113,7 @@ $("start").addEventListener("click", async () => {
     return;
   }
   status("Starting capture…");
-  const res = await chrome.runtime.sendMessage({ type: "POPUP_START" });
+  const res = await chrome.runtime.sendMessage({ type: "POPUP_START", consentTier: consentTier() });
   if (res?.error) return status(`Error: ${res.error}`);
   setCapturing(true);
   captionsHint(!!res.captionsDetected);
@@ -85,7 +124,9 @@ $("stop").addEventListener("click", async () => {
   status("Processing…");
   const res = await chrome.runtime.sendMessage({ type: "POPUP_STOP" });
   setCapturing(false);
-  status(res?.error ? `Error: ${res.error}` : `Done. Meeting ${res.meetingId ?? ""} saved.`);
+  if (res?.error) return status(`Error: ${res.error}`);
+  const warning = res?.audioWarning ? ` Atención: ${res.audioWarning}.` : "";
+  status(`Done. Meeting ${res.meetingId ?? ""} saved.${warning}`);
 });
 
 $("cancel").addEventListener("click", async () => {

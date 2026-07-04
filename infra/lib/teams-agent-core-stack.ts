@@ -8,7 +8,20 @@ import {
   type StackProps,
 } from "aws-cdk-lib";
 import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
-import { Bucket, BlockPublicAccess } from "aws-cdk-lib/aws-s3";
+import {
+  Bucket,
+  BlockPublicAccess,
+  BucketEncryption,
+} from "aws-cdk-lib/aws-s3";
+import { Key } from "aws-cdk-lib/aws-kms";
+import {
+  Alarm,
+  ComparisonOperator,
+  Metric,
+  TreatMissingData,
+} from "aws-cdk-lib/aws-cloudwatch";
+import { Rule } from "aws-cdk-lib/aws-events";
+import { LambdaFunction } from "aws-cdk-lib/aws-events-targets";
 import {
   AccountRecovery,
   CfnIdentityPool,
@@ -32,12 +45,16 @@ import {
   Condition,
   DefinitionBody,
   Fail,
+  IntegrationPattern,
   JsonPath,
   Pass,
   Result,
   StateMachine,
   Succeed,
   TaskInput,
+  Timeout,
+  Wait,
+  WaitTime,
   type IChainable,
 } from "aws-cdk-lib/aws-stepfunctions";
 import { LambdaInvoke } from "aws-cdk-lib/aws-stepfunctions-tasks";
@@ -63,9 +80,32 @@ export class TeamsAgentCoreStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY,
     });
 
+    // Customer-managed key so Tier-2 audio (§7) is SSE-KMS end to end.
+    // BucketEncryption is an in-place CloudFormation update — the existing
+    // bucket resource ("Transcripts" logical id) is reconfigured, not replaced.
+    const transcriptsKey = new Key(this, "TranscriptsKey", {
+      alias: "teams-agent-core/transcripts",
+      enableKeyRotation: true,
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+
     const transcripts = new Bucket(this, "Transcripts", {
       blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
+      encryption: BucketEncryption.KMS,
+      encryptionKey: transcriptsKey,
+      bucketKeyEnabled: true,
+      // S3 lifecycle filters cannot express the mid-key prefix `*/audio/`, so
+      // the 7-day hard cap (§7) keys off an `audio=true` object tag; the
+      // presigned PUT URLs issued at finalize must sign `x-amz-tagging:
+      // audio=true` so uploads land already tagged.
+      lifecycleRules: [
+        {
+          id: "ExpireAudio",
+          tagFilters: { audio: "true" },
+          expiration: Duration.days(7),
+        },
+      ],
       removalPolicy: RemovalPolicy.DESTROY,
     });
 
@@ -183,6 +223,16 @@ export class TeamsAgentCoreStack extends Stack {
     const gateEMaxUnsupportedRate = Number(
       process.env.GATE_E_MAX_UNSUPPORTED_RATE ?? "0.1",
     );
+    // Gate B reads tab-source stats (scores.gateB) — meeting-wide asr stats
+    // include the always-high-confidence mic stream and would mask a bad tab.
+    const gateBMinTabMeanConfidence = Number(
+      process.env.GATE_B_MIN_TAB_MEAN_CONFIDENCE ?? "0.8",
+    );
+    const gateBMinTabP10Confidence = Number(
+      process.env.GATE_B_MIN_TAB_P10_CONFIDENCE ?? "0.5",
+    );
+
+    const metricsNamespace = "TeamsAgentCore/Pipeline";
 
     const pipelineWorker = new NodejsFunction(this, "PipelineWorkerFn", {
       entry: path.join(BACKEND_SRC, "handlers", "pipeline.ts"),
@@ -208,12 +258,47 @@ export class TeamsAgentCoreStack extends Stack {
         GATE_C_MIN_SELF_QUALITY: String(gateCMinSelfQuality),
         GATE_C_MAX_GARBLED_PCT: String(gateCMaxGarbledPct),
         GATE_E_MAX_UNSUPPORTED_RATE: String(gateEMaxUnsupportedRate),
+        GATE_B_MIN_TAB_MEAN_CONFIDENCE: String(gateBMinTabMeanConfidence),
+        GATE_B_MIN_TAB_P10_CONFIDENCE: String(gateBMinTabP10Confidence),
+        // §2-P3 bounded audio wait: the waitAudio phase owns the deadline and
+        // records pipeline.audioTimeout, so the SFN loop can stay counter-free.
+        AUDIO_WAIT_TIMEOUT_SEC: "1200",
+        METRICS_NAMESPACE: metricsNamespace,
       },
       bundling,
     });
     table.grantReadWriteData(pipelineWorker);
     transcripts.grantReadWrite(pipelineWorker);
     pipelineWorker.addToRolePolicy(bedrockModelAccess);
+    pipelineWorker.addToRolePolicy(
+      new PolicyStatement({
+        actions: [
+          "transcribe:StartTranscriptionJob",
+          "transcribe:GetTranscriptionJob",
+        ],
+        resources: [
+          `arn:aws:transcribe:${this.region}:${this.account}:transcription-job/*`,
+        ],
+      }),
+    );
+    // batchAsr fails its own task token immediately when StartTranscriptionJob
+    // throws, instead of leaving the wait to run out its 2 h timeout.
+    // SendTask* validates the token itself; no resource-level scoping exists.
+    pipelineWorker.addToRolePolicy(
+      new PolicyStatement({
+        actions: ["states:SendTaskSuccess", "states:SendTaskFailure"],
+        resources: ["*"],
+      }),
+    );
+    pipelineWorker.addToRolePolicy(
+      new PolicyStatement({
+        actions: ["cloudwatch:PutMetricData"],
+        resources: ["*"],
+        conditions: {
+          StringEquals: { "cloudwatch:namespace": metricsNamespace },
+        },
+      }),
+    );
 
     const workerTask = (
       id: string,
@@ -399,6 +484,92 @@ export class TeamsAgentCoreStack extends Stack {
       )
       .otherwise(hintTierHaiku);
 
+    // --- Gate B (M5): consented batch re-ASR on the tab source ---
+    // The worker emits scores.gateB only under consent Tier 2 with audio
+    // declared at finalize (§7), so an absent block == gate structurally closed.
+    // The poll deadline anchors on execution start (not meeting end): retried
+    // or orphan-recovered finalizes run long after endedAt and their upload
+    // starts only at that finalize's 202.
+    const waitAudio = workerTask("WaitAudio", "waitAudio", "$.audioWait", {
+      executionStartTime: JsonPath.stringAt("$$.Execution.StartTime"),
+    });
+    // Overwrites $.asrScore so GateC re-evaluates the synth tier on the merged
+    // transcript's scores instead of the streaming pass it just replaced.
+    const mergeBatch = workerTask("MergeBatch", "mergeBatch", "$.asrScore");
+
+    const batchAsr = new LambdaInvoke(this, "BatchAsr", {
+      lambdaFunction: pipelineWorker,
+      integrationPattern: IntegrationPattern.WAIT_FOR_TASK_TOKEN,
+      payload: TaskInput.fromObject({
+        tenantId: JsonPath.stringAt("$.tenantId"),
+        meetingId: JsonPath.stringAt("$.meetingId"),
+        executionArn: JsonPath.stringAt("$$.Execution.Id"),
+        phase: "batchAsr",
+        taskToken: JsonPath.taskToken,
+      }),
+      resultPath: "$.batchAsr",
+      // The single Transcribe job-state event via the callback Lambda is the
+      // only completion signal — nothing emits heartbeats, so any heartbeat
+      // shorter than the job would fail every wait. The timeout alone bounds
+      // a lost event (doc §2-P3).
+      taskTimeout: Timeout.duration(Duration.hours(2)),
+    });
+    batchAsr.addRetry({
+      errors: [
+        "Lambda.ServiceException",
+        "Lambda.AWSLambdaException",
+        "Lambda.SdkClientException",
+        "Lambda.TooManyRequestsException",
+      ],
+      maxAttempts: 2,
+      interval: Duration.seconds(3),
+      backoffRate: 2,
+    });
+
+    // Batch re-ASR failing must never kill the meeting: every batch-path
+    // failure falls back to the streaming-text pipeline (GateC onward, exactly
+    // as if Gate B never fired), keeping the error for the audit trail.
+    waitAudio.addCatch(gateC, { resultPath: "$.batchError" });
+    batchAsr.addCatch(gateC, { resultPath: "$.batchError" });
+    mergeBatch.addCatch(gateC, { resultPath: "$.batchError" });
+
+    // The upload races the pipeline (doc D3): poll the sources declared at
+    // finalize, never an opportunistic S3 check. On timeout the worker records
+    // pipeline.audioTimeout and the pipeline proceeds on streaming text.
+    const audioPollWait = new Wait(this, "AudioPollWait", {
+      time: WaitTime.duration(Duration.seconds(30)),
+    });
+    const audioReady = new Choice(this, "AudioReady")
+      .when(
+        Condition.and(
+          Condition.isPresent("$.audioWait.audioReady"),
+          Condition.booleanEquals("$.audioWait.audioReady", true),
+        ),
+        batchAsr,
+      )
+      .when(
+        Condition.and(
+          Condition.isPresent("$.audioWait.audioTimedOut"),
+          Condition.booleanEquals("$.audioWait.audioTimedOut", true),
+        ),
+        gateC,
+      )
+      .otherwise(audioPollWait);
+
+    // Routes on the worker's flat action, not raw thresholds: §7 consent is
+    // part of the Gate B decision (thresholds alone would send every
+    // non-consented captions-primary meeting — zero tab confidence — into the
+    // poll loop), and the recorded GateDecision can never disagree with SFN.
+    const gateB = new Choice(this, "GateB")
+      .when(
+        Condition.and(
+          Condition.isPresent("$.asrScore.gateBAction"),
+          Condition.stringEquals("$.asrScore.gateBAction", "batchAsr"),
+        ),
+        waitAudio,
+      )
+      .otherwise(gateC);
+
     const verifRate = "$.verify.scores.verification.unsupportedRate";
     const verifUnsupported = "$.verify.scores.verification.unsupported";
     // Optional absolute floor: any UNSUPPORTED on a critical field escalates
@@ -459,7 +630,13 @@ export class TeamsAgentCoreStack extends Stack {
     correlate.next(gateA);
     flagSpeakerRepair.next(asrScore);
     skipSpeakerRepair.next(asrScore);
-    asrScore.next(gateC);
+    asrScore.next(gateB);
+    waitAudio.next(audioReady);
+    audioPollWait.next(waitAudio);
+    batchAsr.next(mergeBatch);
+    // Re-enters the LLM ladder through GateC: mergeBatch re-ran P2 + P3 over
+    // the merged transcript and left the fresh scores at $.asrScore.
+    mergeBatch.next(gateC);
     hintTierSonnet.next(clean);
     hintTierHaiku.next(clean);
     clean.next(parseGuard("CleanOk", "$.phaseResult.status", extract));
@@ -479,8 +656,76 @@ export class TeamsAgentCoreStack extends Stack {
 
     const pipeline = new StateMachine(this, "MeetingPipeline", {
       definitionBody: DefinitionBody.fromChainable(correlate),
-      timeout: Duration.hours(2),
+      // 2 h LLM budget + Gate B worst case (20 min audio poll + 2 h batch job).
+      timeout: Duration.hours(5),
     });
+
+    // EventBridge is the only completion channel for Transcribe Batch — the
+    // event carries just jobName + status, so the callback resolves the task
+    // token from the jobName-keyed record persisted before the job started.
+    const transcribeCallback = new NodejsFunction(this, "TranscribeCallbackFn", {
+      entry: path.join(BACKEND_SRC, "handlers", "transcribe-callback.ts"),
+      runtime: Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      environment: { TABLE_NAME: table.tableName },
+      bundling,
+    });
+    // Read-write: the handler deletes the consumed BATCHJOB# token record.
+    table.grantReadWriteData(transcribeCallback);
+    // The callback re-reads the authoritative job status — the EventBridge
+    // event itself is unauthenticated in a shared account.
+    transcribeCallback.addToRolePolicy(
+      new PolicyStatement({
+        actions: ["transcribe:GetTranscriptionJob"],
+        resources: [
+          `arn:aws:transcribe:${this.region}:${this.account}:transcription-job/*`,
+        ],
+      }),
+    );
+    // SendTask* validates the token itself; no resource-level scoping exists.
+    transcribeCallback.addToRolePolicy(
+      new PolicyStatement({
+        actions: ["states:SendTaskSuccess", "states:SendTaskFailure"],
+        resources: ["*"],
+      }),
+    );
+    new Rule(this, "TranscribeJobStateChange", {
+      eventPattern: {
+        source: ["aws.transcribe"],
+        detailType: ["Transcribe Job State Change"],
+        detail: { TranscriptionJobStatus: ["COMPLETED", "FAILED"] },
+      },
+      targets: [new LambdaFunction(transcribeCallback)],
+    });
+
+    // --- Telemetry alarms (M6): dashboard-only, no actions until the
+    // thresholds are calibrated against the golden set (§8 risk 2). Rates are
+    // pre-computed at emission, so alarms read a single metric.
+    const alarmMaxEscalationRate = Number(
+      process.env.ALARM_MAX_ESCALATION_RATE ?? "0.25",
+    );
+    const alarmMaxNeedsReviewRate = Number(
+      process.env.ALARM_MAX_NEEDS_REVIEW_RATE ?? "0.15",
+    );
+    const rateAlarm = (id: string, metricName: string, threshold: number) =>
+      new Alarm(this, id, {
+        metric: new Metric({
+          namespace: metricsNamespace,
+          metricName,
+          statistic: "Average",
+          period: Duration.hours(1),
+        }),
+        threshold,
+        evaluationPeriods: 1,
+        comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+        treatMissingData: TreatMissingData.NOT_BREACHING,
+      });
+    rateAlarm("EscalationRateAlarm", "EscalationRate", alarmMaxEscalationRate);
+    rateAlarm(
+      "NeedsReviewRateAlarm",
+      "NeedsReviewRate",
+      alarmMaxNeedsReviewRate,
+    );
 
     const ingest = new NodejsFunction(this, "IngestFn", {
       entry: path.join(BACKEND_SRC, "handlers", "ingest.ts"),
@@ -491,7 +736,23 @@ export class TeamsAgentCoreStack extends Stack {
       bundling,
     });
     table.grantReadWriteData(ingest);
-    transcripts.grantPut(ingest);
+    // Presigned audio PUT URLs issued at finalize sign with THIS role. The
+    // internet-facing handler only ever writes `*/audio/*` (presigned) and
+    // `*/raw-payload.json` — bucket-wide grantPut would turn any future
+    // key-construction bug into cross-tenant artifact tampering.
+    // s3:PutObjectTagging covers the signed x-amz-tagging lifecycle tag.
+    ingest.addToRolePolicy(
+      new PolicyStatement({
+        actions: ["s3:PutObject", "s3:PutObjectTagging"],
+        resources: [
+          `${transcripts.bucketArn}/*/audio/*`,
+          `${transcripts.bucketArn}/*/raw-payload.json`,
+        ],
+      }),
+    );
+    // The narrow S3 statement no longer carries the KMS grant that grantPut
+    // emitted (SSE-KMS writes need GenerateDataKey*).
+    transcriptsKey.grantEncrypt(ingest);
     pipeline.grantStartExecution(ingest);
     // Reprocess must 409 on an already-running execution.
     pipeline.grantRead(ingest);

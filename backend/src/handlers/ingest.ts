@@ -42,7 +42,7 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (
   }
 
   const payload = body as MeetingFinalizeRequest;
-  const meetingId = await finalizeMeeting(
+  const { meetingId } = await finalizeMeeting(
     tenantId,
     mintMeetingId(payload.startedAt),
     // Legacy builds mint no captureId; a fresh one keeps the upsert path keyed.

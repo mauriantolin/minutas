@@ -6,15 +6,21 @@ import {
   QueryCommand,
   UpdateCommand,
   BatchWriteCommand,
+  DeleteCommand,
 } from "@aws-sdk/lib-dynamodb";
 import {
   DeleteObjectsCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type {
+  AudioSource,
+  BatchJobTokenRecord,
+  BatchMergeResult,
   CleanTranscript,
   CorrelatedSegment,
   DiarizedSegment,
@@ -39,6 +45,9 @@ const captureSk = (captureId: string) => `CAPTURE#${captureId}`;
 // Own prefix (not MEETING#…) so listMeetings' begins_with never sees chunk items.
 const segSk = (meetingId: string, seq: number) =>
   `SEGS#${meetingId}#${String(seq).padStart(8, "0")}`;
+// jobName-keyed (not tenant-keyed): the Transcribe job-state event carries only
+// the job name, so the callback Lambda has no tenant context to build a PK from.
+const batchJobPk = (jobName: string) => `BATCHJOB#${jobName}`;
 
 export async function putMeeting(meeting: Meeting): Promise<void> {
   await ddb.send(
@@ -422,6 +431,131 @@ export async function getVerification(
   meetingId: string,
 ): Promise<VerificationReport> {
   return getJson(artifactKey(tenantId, meetingId, "verification.json"));
+}
+
+// --- Opt-in audio + batch re-ASR (M5, doc §2-P3/§7) ---
+
+export const audioKey = (t: string, m: string, source: AudioSource) =>
+  `${t}/${m}/audio/${source}.webm`;
+
+/**
+ * Backend-signed PUT URL: the identity-pool role cannot be IAM-scoped to the
+ * `{tenantId}/{meetingId}/audio/*` prefix, so the extension never gets a direct
+ * s3:PutObject grant.
+ *
+ * Both headers below must stay in SignedHeaders (not hoisted into the query
+ * string): S3 only applies object tags from the x-amz-tagging REQUEST header —
+ * a hoisted query param is silently ignored and the 7-day ExpireAudio lifecycle
+ * rule (which filters on audio=true) would never match. The presigner also
+ * unsigns content-type by default, so it is forced signable to pin the declared
+ * container. The extension's PUT must therefore send exactly
+ * `x-amz-tagging: audio=true` and `content-type: audio/webm`.
+ */
+export async function presignAudioUpload(
+  tenantId: string,
+  meetingId: string,
+  source: AudioSource,
+): Promise<string> {
+  return getSignedUrl(
+    s3,
+    new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: audioKey(tenantId, meetingId, source),
+      ContentType: "audio/webm",
+      Tagging: "audio=true",
+    }),
+    {
+      expiresIn: 900,
+      unhoistableHeaders: new Set(["x-amz-tagging"]),
+      signableHeaders: new Set(["content-type", "x-amz-tagging"]),
+    },
+  );
+}
+
+/** Gate B's poll target check — HeadObject on a declared-at-finalize source. */
+export async function audioObjectExists(
+  tenantId: string,
+  meetingId: string,
+  source: AudioSource,
+): Promise<boolean> {
+  try {
+    await s3.send(
+      new HeadObjectCommand({
+        Bucket: BUCKET,
+        Key: audioKey(tenantId, meetingId, source),
+      }),
+    );
+    return true;
+  } catch (err) {
+    if ((err as { name?: string }).name === "NotFound") return false;
+    throw err;
+  }
+}
+
+/**
+ * §7 Tier 2 commitment: uploaded audio is deleted as soon as a verified
+ * transcript exists (the S3 lifecycle rule is only the 7-day hard cap).
+ */
+export async function deleteAudioObjects(
+  tenantId: string,
+  meetingId: string,
+): Promise<void> {
+  await deletePrefix(`${tenantId}/${meetingId}/audio/`);
+}
+
+/** Transcribe Batch output lands here (OutputKey on StartTranscriptionJob). */
+export const batchTranscriptKey = (t: string, m: string) =>
+  `${t}/${m}/batch-transcript.json`;
+
+export async function getBatchTranscriptJson(
+  tenantId: string,
+  meetingId: string,
+): Promise<unknown> {
+  return getJson(batchTranscriptKey(tenantId, meetingId));
+}
+
+export async function putMergedTranscript(
+  tenantId: string,
+  meetingId: string,
+  merged: BatchMergeResult,
+): Promise<void> {
+  await putJson(artifactKey(tenantId, meetingId, "transcript.merged.json"), merged);
+}
+
+/**
+ * Plain put (no condition): an SFN retry of the batchAsr state re-invokes with
+ * a fresh task token, and the latest token must win the jobName lookup.
+ */
+export async function putBatchJobToken(
+  record: BatchJobTokenRecord,
+): Promise<void> {
+  await ddb.send(
+    new PutCommand({
+      TableName: TABLE,
+      Item: { PK: batchJobPk(record.jobName), SK: "TOKEN", ...record },
+    }),
+  );
+}
+
+export async function getBatchJobToken(
+  jobName: string,
+): Promise<BatchJobTokenRecord | undefined> {
+  const { Item } = await ddb.send(
+    new GetCommand({
+      TableName: TABLE,
+      Key: { PK: batchJobPk(jobName), SK: "TOKEN" },
+    }),
+  );
+  return Item as BatchJobTokenRecord | undefined;
+}
+
+export async function deleteBatchJobToken(jobName: string): Promise<void> {
+  await ddb.send(
+    new DeleteCommand({
+      TableName: TABLE,
+      Key: { PK: batchJobPk(jobName), SK: "TOKEN" },
+    }),
+  );
 }
 
 async function putJson(key: string, body: unknown): Promise<void> {

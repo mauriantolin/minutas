@@ -1,5 +1,7 @@
 import {
   DescribeExecutionCommand,
+  SendTaskFailureCommand,
+  SendTaskSuccessCommand,
   SFNClient,
   StartExecutionCommand,
 } from "@aws-sdk/client-sfn";
@@ -46,6 +48,36 @@ export async function startPipeline(
   } catch (err) {
     if ((err as Error).name === "ExecutionAlreadyExists") return undefined;
     throw err;
+  }
+}
+
+// The waiting state carries HeartbeatSeconds/TimeoutSeconds (~2h), so by the
+// time a delayed/duplicated EventBridge delivery lands the token may already
+// be consumed or timed out — that is a resolved wait, not an error to retry.
+const TOKEN_GONE = new Set(["TaskTimedOut", "TaskDoesNotExist"]);
+
+export async function sendTaskSuccess(
+  taskToken: string,
+  output: unknown,
+): Promise<void> {
+  try {
+    await sfn.send(
+      new SendTaskSuccessCommand({ taskToken, output: JSON.stringify(output) }),
+    );
+  } catch (err) {
+    if (!TOKEN_GONE.has((err as Error).name)) throw err;
+  }
+}
+
+export async function sendTaskFailure(
+  taskToken: string,
+  error: string,
+  cause?: string,
+): Promise<void> {
+  try {
+    await sfn.send(new SendTaskFailureCommand({ taskToken, error, cause }));
+  } catch (err) {
+    if (!TOKEN_GONE.has((err as Error).name)) throw err;
   }
 }
 

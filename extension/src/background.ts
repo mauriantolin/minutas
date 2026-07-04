@@ -1,13 +1,18 @@
 import type {
+  AsrCaptureMode,
+  AudioPendingDeclaration,
   CaptionEvent,
+  ConsentTier,
   DiarizedSegment,
   MeetingFinalizeRequest,
+  MeetingFinalizeResponse,
   MeetingStartRequest,
   MeetingStartResponse,
   SegmentsAppendRequest,
   SignalHealth,
 } from "@teams-agent-core/shared";
 import { CONFIG } from "./config.js";
+import { hasAudio, purgeAudio, purgeExpiredAudio, readAudio } from "./audio-store.js";
 import {
   clearCapture,
   getCaptionCheckpoint,
@@ -46,11 +51,18 @@ type CaptureState = {
   signalHealth?: SignalHealth;
   lastFlushAt: number;
   meetingMeta: { title: string; localUserName: string; startedAt: string };
+  consentTier: ConsentTier;
+  consentGrantedAt: string;
+  // Gate 0 capture mode — merged into signalHealth at finalize.
+  asrMode?: AsrCaptureMode;
+  rearmCount?: number;
+  crossCheckActive?: boolean;
 };
 
 const FLUSH_MAX_SEGMENTS = 20;
 const FLUSH_MAX_MS = 15_000;
 const FINALIZE_BACKOFF_MS = [0, 2000, 8000];
+const UPLOAD_BACKOFF_MS = [0, 2000, 8000];
 
 const readState = async (): Promise<CaptureState | undefined> =>
   (await chrome.storage.session.get("capture")).capture;
@@ -123,7 +135,7 @@ async function registerMeeting(
   }
 }
 
-async function startCapture(): Promise<{ captionsDetected: boolean }> {
+async function startCapture(consentTier: ConsentTier): Promise<{ captionsDetected: boolean }> {
   if (await readState()) throw new Error("Capture already in progress");
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error("No active tab");
@@ -135,10 +147,26 @@ async function startCapture(): Promise<{ captionsDetected: boolean }> {
   const idToken = await getIdToken();
   const { captionsDetected, ...meetingMeta } = await startInTab(tab.id);
   const captureId = crypto.randomUUID();
+  const consentGrantedAt = new Date().toISOString();
+
+  // Gate 0: captions-primary only when the flag is on AND the caption self-test
+  // passed; the offscreen watchdog re-arms if finals never actually flow.
+  const captionsPrimary = CONFIG.captionsPrimaryEnabled && !!captionsDetected;
+  // Cross-check is forced on: no caption→transcript consumer exists yet
+  // (captions only anchor speakers over ASR segments), so idling the tab pipe
+  // would publish transcripts missing every remote participant. Restore
+  // CONFIG.crossCheckFraction sampling only once the backend synthesizes
+  // caption-sourced segments.
+  const crossCheck = captionsPrimary;
 
   // Start failure is tolerated (offline start): finalize upserts by captureId later.
   const meetingId = await registerMeeting(captureId, meetingMeta, idToken);
-  await saveCaptureMeta({ captureId, meetingId, ...meetingMeta });
+  await saveCaptureMeta({
+    captureId,
+    meetingId,
+    ...meetingMeta,
+    ...(consentTier > 0 && { consentTier, consentGrantedAt }),
+  });
 
   const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
   await ensureOffscreen();
@@ -148,6 +176,9 @@ async function startCapture(): Promise<{ captionsDetected: boolean }> {
     streamId,
     idToken,
     captureId,
+    consentTier,
+    captionsPrimary,
+    crossCheck,
   });
   // A capture that never opened its audio stream must not be recorded as active,
   // or the popup shows "capturing" while nothing is captured.
@@ -166,6 +197,12 @@ async function startCapture(): Promise<{ captionsDetected: boolean }> {
     captionPending: [],
     lastFlushAt: Date.now(),
     meetingMeta,
+    consentTier,
+    consentGrantedAt,
+    ...(captionsPrimary && {
+      asrMode: "captions-primary" as const,
+      crossCheckActive: crossCheck,
+    }),
   });
   return { captionsDetected: !!captionsDetected };
 }
@@ -227,6 +264,12 @@ const onCaptionCheckpoint = (
   withStateLock(async () => {
     const state = await readState();
     if (!state || senderTabId !== state.activeTabId) return;
+    // Finalized captions are the Gate 0 watchdog's liveness signal.
+    if (events.length > 0) {
+      void chrome.runtime
+        .sendMessage({ target: "offscreen", type: "CAPTION_HEARTBEAT" })
+        .catch(() => {});
+    }
     state.captionPending.push(...events);
     state.signalHealth = signalHealth;
     const prior = await getCaptionCheckpoint(state.captureId).catch(() => undefined);
@@ -239,7 +282,57 @@ const onCaptionCheckpoint = (
     if (await readState()) await writeState(state);
   });
 
-async function finalizeMeeting(record: PendingFinalize): Promise<{ meetingId?: string; error?: string }> {
+async function putWithRetry(url: string, blob: Blob): Promise<boolean> {
+  for (const delay of UPLOAD_BACKOFF_MS) {
+    if (delay) await new Promise((r) => setTimeout(r, delay));
+    const ok = await fetch(url, {
+      method: "PUT",
+      // Both headers are in the presigned URL's SignedHeaders (S3 only applies
+      // object tags from the request header — the ExpireAudio lifecycle rule
+      // depends on it), so they must match presignAudioUpload exactly.
+      headers: { "content-type": "audio/webm", "x-amz-tagging": "audio=true" },
+      body: blob,
+    })
+      .then((r) => r.ok)
+      .catch(() => false);
+    if (ok) return true;
+  }
+  return false;
+}
+
+/**
+ * Post-finalize audio settlement (§7): tier 1 audio served its purpose once the
+ * transcript is safely finalized → purge; tier 2 uploads to the presigned URLs the
+ * 202 returned, purging on success. A failed upload keeps the local copy (the
+ * N-day sweep is its backstop) and returns a user-facing warning.
+ */
+async function settleAudio(
+  record: PendingFinalize,
+  res: Partial<MeetingFinalizeResponse>,
+): Promise<string | undefined> {
+  const tier = record.payload.audioConsent?.tier ?? 0;
+  if (tier === 0) return undefined;
+  const pending = record.payload.audioPending;
+  if (tier === 2 && pending) {
+    for (const source of pending.sources) {
+      // Blob already purged (retention sweep): nothing left to upload, so the
+      // source is skipped instead of warning forever on a record that can
+      // never succeed.
+      const blob = await readAudio(record.captureId, source);
+      if (!blob) continue;
+      const url = res.audioUploadUrls?.[source];
+      if (!url || !(await putWithRetry(url, blob))) {
+        return "la subida del audio falló; la copia local se conserva";
+      }
+    }
+  }
+  await purgeAudio(record.captureId);
+  return undefined;
+}
+
+async function finalizeMeeting(
+  record: PendingFinalize,
+): Promise<{ meetingId?: string; error?: string; audioWarning?: string }> {
   await savePendingFinalize(record);
   const idToken = await getIdToken();
 
@@ -252,18 +345,54 @@ async function finalizeMeeting(record: PendingFinalize): Promise<{ meetingId?: s
 
   for (const delay of FINALIZE_BACKOFF_MS) {
     if (delay) await new Promise((r) => setTimeout(r, delay));
-    const ok = await api(`/meetings/${meetingId}/finalize`, record.payload, idToken)
-      .then((r) => r.ok)
-      .catch(() => false);
-    if (ok) {
-      await clearCapture(record.captureId);
-      return { meetingId };
+    const res = await api(`/meetings/${meetingId}/finalize`, record.payload, idToken).catch(
+      () => null,
+    );
+    if (res?.ok) {
+      const body = (await res.json().catch(() => ({}))) as Partial<MeetingFinalizeResponse>;
+      const audioWarning = await settleAudio(record, body);
+      // A failed consented upload keeps the pendingFinalize record: the OPFS
+      // copy is retained on purpose, and the recovery sweep replays finalize
+      // (the backend re-signs URLs) to retry the PUT — otherwise the total
+      // retry budget would be 3 PUTs in the ~10 s after Stop.
+      if (!audioWarning) await clearCapture(record.captureId);
+      return { meetingId, ...(audioWarning && { audioWarning }) };
     }
   }
   return { error: "Finalize failed — capture kept locally for retry" };
 }
 
-async function stopCapture(): Promise<{ meetingId?: string; error?: string }> {
+/**
+ * audioConsent + audioPending fields for the finalize payload. audioPending is
+ * declared only when tab audio actually exists in OPFS: Gate B's poll loop waits
+ * on exactly the declared sources, so declaring a recording that failed to write
+ * would stall the pipeline until the poll timeout.
+ */
+async function audioFinalizeFields(
+  tier: ConsentTier,
+  grantedAt: string | undefined,
+  captureId: string,
+  startedAt: string,
+  endedAt: string,
+): Promise<Pick<MeetingFinalizeRequest, "audioConsent" | "audioPending">> {
+  if (tier === 0 || !grantedAt) return {};
+  const declareUpload = tier === 2 && (await hasAudio(captureId, "tab").catch(() => false));
+  const audioPending: AudioPendingDeclaration = {
+    sources: ["tab"],
+    format: "webm-opus",
+    durationSec: Math.max(0, Math.round((Date.parse(endedAt) - Date.parse(startedAt)) / 1000)),
+  };
+  return {
+    audioConsent: { tier, grantedAt },
+    ...(declareUpload && { audioPending }),
+  };
+}
+
+async function stopCapture(): Promise<{
+  meetingId?: string;
+  error?: string;
+  audioWarning?: string;
+}> {
   // Removal must serialize with in-flight segment flushes, or a concurrent
   // onSegmentFinal can write the stale state back after it was removed.
   const state = await withStateLock(async () => {
@@ -292,16 +421,38 @@ async function stopCapture(): Promise<{ meetingId?: string; error?: string }> {
     ? undefined
     : await getCaptionCheckpoint(state.captureId).catch(() => undefined);
 
+  const endedAt = content?.endedAt ?? new Date().toISOString();
+  const baseHealth = content?.signalHealth ?? captionCkpt?.signalHealth ?? state.signalHealth;
+  // asrMode is capture-mode telemetry owned here, not by the content script;
+  // absent means plain streaming (pre-Gate-0 semantics).
+  const signalHealth: SignalHealth | undefined = state.asrMode
+    ? {
+        ...(baseHealth ?? { captionsSeen: false, speakerRingSeen: false, domReadCount: 0 }),
+        asrMode: state.asrMode,
+        ...(state.rearmCount && { rearmCount: state.rearmCount }),
+        crossCheckActive: !!state.crossCheckActive,
+      }
+    : baseHealth;
+
+  const audioDeclaration = await audioFinalizeFields(
+    state.consentTier ?? 0,
+    state.consentGrantedAt,
+    state.captureId,
+    state.meetingMeta.startedAt,
+    endedAt,
+  );
+
   const payload: MeetingFinalizeRequest = {
     captureId: state.captureId,
     title: state.meetingMeta.title,
     startedAt: state.meetingMeta.startedAt,
-    endedAt: content?.endedAt ?? new Date().toISOString(),
+    endedAt,
     localUserName: state.meetingMeta.localUserName,
     segments,
     speakerTimeline: content?.speakerTimeline ?? [],
     captionTimeline: content?.captionTimeline ?? captionCkpt?.captionTimeline ?? [],
-    signalHealth: content?.signalHealth ?? captionCkpt?.signalHealth ?? state.signalHealth,
+    signalHealth,
+    ...audioDeclaration,
   };
   return finalizeMeeting({
     captureId: state.captureId,
@@ -320,7 +471,10 @@ async function cancelCapture(): Promise<void> {
   });
   await chrome.runtime.sendMessage({ target: "offscreen", type: "STOP" }).catch(() => {});
   await chrome.offscreen.closeDocument().catch(() => {});
-  if (state) await clearCapture(state.captureId).catch(() => {});
+  if (state) {
+    await clearCapture(state.captureId).catch(() => {});
+    await purgeAudio(state.captureId).catch(() => {});
+  }
 }
 
 // Sweep IndexedDB for captures that never finalized (offscreen/SW crash, browser exit,
@@ -330,6 +484,7 @@ async function recoverOrphans(): Promise<void> {
   if (recovering) return;
   recovering = true;
   try {
+    await purgeExpiredAudio(CONFIG.audioRetentionDays).catch(() => {});
     const idToken = await getIdToken().catch(() => null);
     if (!idToken) return;
     const active = await readState();
@@ -344,11 +499,19 @@ async function recoverOrphans(): Promise<void> {
       if (meta.captureId === active?.captureId) continue;
       if (pending.some((r) => r.captureId === meta.captureId)) continue;
       const checkpoint = await getCheckpoint(meta.captureId);
-      if (!checkpoint?.segments.length) {
+      const captions = await getCaptionCheckpoint(meta.captureId).catch(() => undefined);
+      const hasTabAudio = await hasAudio(meta.captureId, "tab").catch(() => false);
+      // A capture with no ASR segments may still carry the meeting: captions
+      // checkpoint fully (streaming outage, captions-primary) and tier-2 audio
+      // is re-transcribable — discard only when all three are empty.
+      if (!checkpoint?.segments.length && !captions?.captionTimeline.length && !hasTabAudio) {
         await clearCapture(meta.captureId);
+        await purgeAudio(meta.captureId).catch(() => {});
         continue;
       }
-      const captions = await getCaptionCheckpoint(meta.captureId).catch(() => undefined);
+      const endedAt = new Date(
+        checkpoint?.updatedAt ?? captions?.updatedAt ?? Date.now(),
+      ).toISOString();
       await finalizeMeeting({
         captureId: meta.captureId,
         meetingId: meta.meetingId,
@@ -356,12 +519,19 @@ async function recoverOrphans(): Promise<void> {
           captureId: meta.captureId,
           title: meta.title,
           startedAt: meta.startedAt,
-          endedAt: new Date(checkpoint.updatedAt).toISOString(),
+          endedAt,
           localUserName: meta.localUserName,
-          segments: checkpoint.segments,
+          segments: checkpoint?.segments ?? [],
           speakerTimeline: [],
           captionTimeline: captions?.captionTimeline ?? [],
           signalHealth: captions?.signalHealth,
+          ...(await audioFinalizeFields(
+            meta.consentTier ?? 0,
+            meta.consentGrantedAt,
+            meta.captureId,
+            meta.startedAt,
+            endedAt,
+          )),
         },
         updatedAt: Date.now(),
       }).catch(() => {});
@@ -390,6 +560,16 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
     void chrome.storage.session.set({ idToken: msg.idToken });
     return false;
   }
+  if (msg.type === "ASR_REARMED") {
+    void withStateLock(async () => {
+      const state = await readState();
+      if (!state) return;
+      state.asrMode = "rearmed";
+      state.rearmCount = msg.rearmCount;
+      await writeState(state);
+    });
+    return false;
+  }
   if (msg.type === "GET_STATE") {
     // The popup just refreshed the session token — a good moment to retry orphans.
     void recoverOrphans();
@@ -397,7 +577,7 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
     return true;
   }
   if (msg.type === "POPUP_START") {
-    startCapture()
+    startCapture((msg.consentTier ?? 0) as ConsentTier)
       .then((r) => sendResponse({ ok: true, ...r }))
       .catch((e) => sendResponse({ error: String(e) }));
     return true;

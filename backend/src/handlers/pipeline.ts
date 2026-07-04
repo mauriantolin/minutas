@@ -7,7 +7,9 @@ import type {
   ExtractedActionItem,
   ExtractedItem,
   ExtractionResult,
+  GateBScores,
   GateId,
+  Meeting,
   MeetingIngestPayload,
   MeetingStatus,
   MeetingSummary,
@@ -25,6 +27,11 @@ import {
   tokenize,
 } from "@teams-agent-core/shared";
 import {
+  audioKey,
+  audioObjectExists,
+  batchTranscriptKey,
+  deleteAudioObjects,
+  getBatchTranscriptJson,
   getCleanTranscript,
   getExtraction,
   getLabeledTranscript,
@@ -32,15 +39,24 @@ import {
   getRawPayload,
   getSummaryDraft,
   getVerification,
+  putBatchJobToken,
   putCleanTranscript,
   putExtraction,
   putLabeledTranscript,
+  putMergedTranscript,
   putSummaryArtifact,
   putSummaryDraft,
   putTranscript,
   putVerification,
   updateMeeting,
 } from "../lib/store.js";
+import {
+  batchJobName,
+  mergeBatchTranscript,
+  parseBatchTranscript,
+  startBatchTranscription,
+} from "../lib/batch.js";
+import { emitPublishMetrics } from "../lib/telemetry.js";
 import {
   cleanTranscriptContext,
   generateCleanTranscript,
@@ -62,6 +78,9 @@ import { auditTurnInvariants, hasViolations, type TurnAudit } from "../lib/invar
 export type PipelineWorkerPhase =
   | "correlate"
   | "asrScore"
+  | "waitAudio"
+  | "batchAsr"
+  | "mergeBatch"
   | "clean"
   | "extract"
   | "synthesize"
@@ -76,6 +95,10 @@ export interface PipelineWorkerEvent {
   executionArn: string;
   phase: PipelineWorkerPhase;
   modelTier?: ModelTier;
+  /** `$$.Task.Token` of the waitForTaskToken state; present only on `batchAsr`. */
+  taskToken?: string;
+  /** `$$.Execution.StartTime`; present only on `waitAudio` (poll deadline anchor). */
+  executionStartTime?: string;
   /** SFN Catch payload; present only on `fail`. */
   error?: { Error?: string; Cause?: string };
 }
@@ -86,10 +109,19 @@ export interface PipelineWorkerResult {
   phase: PipelinePhase;
   scores: PipelineScores;
   status?: MeetingStatus;
+  /**
+   * Gate B routing, emitted by `asrScore`. Consent is part of the decision, so
+   * the SFN Choice reads this action rather than re-deriving it from scores —
+   * "batchAsr" also implies audioPending was declared (the poll loop's target).
+   */
+  gateBAction?: "batchAsr" | "proceed";
   /** Gate E routing, emitted by `verify`: next state the ladder demands. */
   gateEAction?: "publish" | "repair" | "synthesize";
   /** Tier the re-synthesis must run on when gateEAction === "synthesize". */
   escalateTier?: ModelTier;
+  /** Poll outcome, emitted by `waitAudio` (SFN reads it at `$.audioWait`). */
+  audioReady?: boolean;
+  audioTimedOut?: boolean;
 }
 
 // Mirrored from the SFN Choice thresholds (baked at synth time) so the worker's
@@ -102,6 +134,17 @@ const GATE_A_MIN_LABEL_MARGIN = Number(
 );
 const GATE_A_MIN_CAPTION_AGREEMENT_PCT = Number(
   process.env.GATE_A_MIN_CAPTION_AGREEMENT_PCT ?? "80",
+);
+// Stricter than Gate C's: Gate B spends real money (+$1.44/hr tab re-ASR), so
+// it fires on clearly bad tab audio, not merely "escalate the synth tier" bad.
+const GATE_B_MIN_TAB_MEAN_CONFIDENCE = Number(
+  process.env.GATE_B_MIN_TAB_MEAN_CONFIDENCE ?? "0.7",
+);
+const GATE_B_MIN_TAB_P10_CONFIDENCE = Number(
+  process.env.GATE_B_MIN_TAB_P10_CONFIDENCE ?? "0.4",
+);
+const AUDIO_WAIT_TIMEOUT_SEC = Number(
+  process.env.AUDIO_WAIT_TIMEOUT_SEC ?? "1200",
 );
 const GATE_C_MIN_MEAN_CONFIDENCE = Number(
   process.env.GATE_C_MIN_MEAN_CONFIDENCE ?? "0.8",
@@ -160,6 +203,10 @@ export const handler = async (
         pipeline,
         status: "needs_review",
       });
+      // This IS a publish (needs_review is a terminal published state): without
+      // a datapoint here the NeedsReviewRate alarm is blind to fleet-wide
+      // structured-output regressions — the exact class it exists to catch.
+      await emitPublishMetrics(pipeline, true);
       return result(meetingId, pipeline, "needs_review");
     }
   };
@@ -191,7 +238,104 @@ export const handler = async (
       const payload = await getRawPayload(tenantId, meetingId);
       pipeline.phase = "ASR_SCORED";
       pipeline.scores.asr = asrScores(payload);
+      // Tab-only stats: the always-high-confidence mic stream would mask a bad
+      // tab stream in the meeting-wide numbers (batch re-ASR is tab-only).
+      pipeline.scores.gateB = gateBScores(payload);
+      const [gateBFired, gateBReason] = gateBEval(
+        meeting,
+        pipeline.scores.gateB,
+      );
+      recordGate(pipeline, "gateB", gateBFired, gateBReason);
       await updateMeeting(tenantId, meetingId, { pipeline });
+      return {
+        ...result(meetingId, pipeline),
+        gateBAction: gateBFired ? "batchAsr" : "proceed",
+      };
+    }
+
+    // One turn of the SFN Wait/HeadObject poll loop (doc D3): the worker owns
+    // the bounded deadline so the loop stays counter-free. Only the tab source
+    // matters — batch re-ASR never consumes mic, and gateBEval guarantees tab
+    // was declared at finalize.
+    case "waitAudio": {
+      if (await audioObjectExists(tenantId, meetingId, "tab")) {
+        return { ...result(meetingId, pipeline), audioReady: true };
+      }
+      // Deadline anchors on execution start, NOT meeting end: a retried or
+      // orphan-recovered finalize can run hours after endedAt, and its upload
+      // starts right after that finalize's 202 — an endedAt anchor would time
+      // out on the first poll in exactly those recovery cases. Recorded on
+      // timeout, never a silent skip of a consented re-ASR (doc §2-P3).
+      // NaN-safe: an unparsable anchor times out instead of looping for 5 h.
+      const anchor = Date.parse(event.executionStartTime ?? "");
+      if (!(Date.now() - anchor <= AUDIO_WAIT_TIMEOUT_SEC * 1000)) {
+        pipeline.audioTimeout = true;
+        await updateMeeting(tenantId, meetingId, { pipeline });
+        return { ...result(meetingId, pipeline), audioTimedOut: true };
+      }
+      return result(meetingId, pipeline);
+    }
+
+    case "batchAsr": {
+      const jobName = batchJobName(
+        tenantId,
+        meetingId,
+        pipeline.attempts,
+        event.executionArn,
+      );
+      const startedAt = new Date().toISOString();
+      // Token record first: a short file could complete (and fire the
+      // EventBridge event) before a post-start write landed.
+      await putBatchJobToken({
+        jobName,
+        taskToken: event.taskToken!,
+        tenantId,
+        meetingId,
+        startedAt,
+      });
+      await startBatchTranscription({
+        jobName,
+        mediaKey: audioKey(tenantId, meetingId, "tab"),
+        outputKey: batchTranscriptKey(tenantId, meetingId),
+      });
+      pipeline.batch = { jobName, taskToken: event.taskToken!, startedAt };
+      await updateMeeting(tenantId, meetingId, { pipeline });
+      // The state is .waitForTaskToken: this return does NOT complete it — the
+      // callback Lambda's SendTaskSuccess/Failure does, on the job-state event.
+      return result(meetingId, pipeline);
+    }
+
+    case "mergeBatch": {
+      const payload = await getRawPayload(tenantId, meetingId);
+      const batchSegments = parseBatchTranscript(
+        await getBatchTranscriptJson(tenantId, meetingId),
+      );
+      const merged = mergeBatchTranscript(payload.segments, batchSegments);
+      await putMergedTranscript(tenantId, meetingId, merged);
+
+      // P2 re-runs over the merged text (order/length preserved → identical
+      // segIds): batch emits its own segmentation, so without re-anchoring the
+      // quality pass would regress speaker attribution (doc §2-P3).
+      const { segments: labeled, scores } = correlateSpeakersV2({
+        segments: merged.segments,
+        speakerTimeline: payload.speakerTimeline,
+        captionTimeline: payload.captionTimeline,
+        localUserName: payload.localUserName,
+      });
+      await putTranscript(tenantId, meetingId, labeled);
+      await putLabeledTranscript(tenantId, meetingId, labeled);
+      const participants = [
+        ...new Set(labeled.filter((s) => s.resolved).map((s) => s.speaker)),
+      ].map((name) => ({ name }));
+
+      pipeline.phase = "CORRELATED";
+      pipeline.asrSource = "batch-merged";
+      pipeline.scores.correlation = scores;
+      // Gate C downstream must read the merged text's quality, not the
+      // streaming stats the batch pass just replaced.
+      pipeline.scores.asr = asrScores({ ...payload, segments: merged.segments });
+      recordGate(pipeline, "gateA", ...gateAEval(scores));
+      await updateMeeting(tenantId, meetingId, { pipeline, participants });
       return result(meetingId, pipeline);
     }
 
@@ -495,11 +639,22 @@ export const handler = async (
         pipeline.lastError = `verification: ${v.unsupported}/${v.claims} claims unsupported (rate ${v.unsupportedRate.toFixed(2)})${criticalUnsupported ? ", critical field affected" : ""}`;
       }
       const status: MeetingStatus = ready ? "ready" : "needs_review";
+      // The consumed declaration is cleared with the audio (§7): a later
+      // reprocess must not re-fire Gate B and poll for objects deliberately
+      // deleted below.
       await updateMeeting(tenantId, meetingId, {
         pipeline,
         summary: toMeetingSummary(draft, extraction),
         status,
+        ...(ready && meeting.audioPending ? { audioPending: undefined } : {}),
       });
+      // §7 Tier 2: audio is deleted the moment a verified transcript exists;
+      // needs_review keeps it (a reprocess may still want the Gate B pass)
+      // under the 7-day lifecycle hard cap.
+      if (ready && meeting.audioPending) {
+        await deleteAudioObjects(tenantId, meetingId);
+      }
+      await emitPublishMetrics(pipeline, !ready);
       return result(meetingId, pipeline, status);
     }
 
@@ -563,6 +718,36 @@ function gateAEval(scores: CorrelationScores): [boolean, string?] {
     return [
       true,
       `captionAgreementPct ${scores.captionAgreementPct.toFixed(1)} < ${GATE_A_MIN_CAPTION_AGREEMENT_PCT}`,
+    ];
+  }
+  return [false];
+}
+
+/**
+ * Gate B (batch re-ASR): hard-gated on §7 consent — without Tier 2 and a
+ * declared tab upload there is no audio to re-transcribe, whatever the stats
+ * say. Confidence-free tab segments score 0 and fire the gate: when consented
+ * audio exists, "no signal" upgrades conservatively (a dead tab stream is the
+ * strongest case for the batch pass, not a reason to skip it).
+ */
+function gateBEval(meeting: Meeting, scores: GateBScores): [boolean, string?] {
+  if (meeting.audioConsent?.tier !== 2) {
+    return [false, "no upload consent (tier < 2): re-ASR unavailable"];
+  }
+  if (!meeting.audioPending?.sources.includes("tab")) {
+    return [false, "no tab audio declared at finalize"];
+  }
+  if (scores.flaggedImportant) return [true, "meeting flagged important"];
+  if (scores.tabMeanConfidence < GATE_B_MIN_TAB_MEAN_CONFIDENCE) {
+    return [
+      true,
+      `tabMeanConfidence ${scores.tabMeanConfidence.toFixed(2)} < ${GATE_B_MIN_TAB_MEAN_CONFIDENCE}`,
+    ];
+  }
+  if (scores.tabP10Confidence < GATE_B_MIN_TAB_P10_CONFIDENCE) {
+    return [
+      true,
+      `tabP10Confidence ${scores.tabP10Confidence.toFixed(2)} < ${GATE_B_MIN_TAB_P10_CONFIDENCE}`,
     ];
   }
   return [false];
@@ -689,6 +874,22 @@ function asrScores(payload: MeetingIngestPayload): AsrScores {
         };
   const wer = captionWerProxy(payload);
   return wer === undefined ? base : { ...base, captionWerProxy: wer };
+}
+
+function gateBScores(payload: MeetingIngestPayload): GateBScores {
+  const tab = payload.segments.filter((s) => s.source === "tab");
+  const confs = tab
+    .map((s) => s.confidence)
+    .filter((c): c is number => c !== undefined)
+    .sort((a, b) => a - b);
+  if (confs.length === 0) {
+    return { tabMeanConfidence: 0, tabP10Confidence: 0, tabSegmentCount: tab.length };
+  }
+  return {
+    tabMeanConfidence: confs.reduce((a, b) => a + b, 0) / confs.length,
+    tabP10Confidence: confs[Math.floor(0.1 * (confs.length - 1))]!,
+    tabSegmentCount: tab.length,
+  };
 }
 
 /** Token-multiset F1 distance between caption text and tab ASR text — the free

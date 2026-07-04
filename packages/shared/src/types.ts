@@ -28,6 +28,43 @@ export interface Meeting {
   status: MeetingStatus;
   /** Async-pipeline progress; absent on legacy records and while `capturing`. */
   pipeline?: PipelineState;
+  /** Per-meeting audio consent (§7); absent = tier 0 (no recording anywhere). */
+  audioConsent?: AudioConsent;
+  /** Audio declared at finalize but possibly still uploading — Gate B's poll target. */
+  audioPending?: AudioPendingDeclaration;
+}
+
+// ---------------------------------------------------------------------------
+// Privacy consent ladder (§7) + opt-in audio upload (M5).
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-meeting audio consent: 0 = no recording anywhere (Gate B can never fire),
+ * 1 = local OPFS buffer only, 2 = explicit upload consent (enables batch re-ASR).
+ */
+export type ConsentTier = 0 | 1 | 2;
+
+/** Consent record stored on the meeting item. */
+export interface AudioConsent {
+  tier: ConsentTier;
+  /** ISO-8601 UTC. */
+  grantedAt: string;
+}
+
+/** MediaRecorder Opus in WebM — the only capture container today. */
+export type AudioUploadFormat = "webm-opus";
+
+/**
+ * Declared at finalize under consent Tier 2: which recorded sources the extension
+ * will upload. Gate B's bounded Wait/HeadObject poll loop waits on exactly these
+ * declared sources — never an opportunistic S3 check (the upload races the pipeline).
+ */
+export interface AudioPendingDeclaration {
+  /** Sources to be uploaded; Gate B batch re-ASR only ever consumes "tab". */
+  sources: AudioSource[];
+  format: AudioUploadFormat;
+  /** Recorded duration in seconds — sizes the poll timeout and the batch job. */
+  durationSec: number;
 }
 
 /**
@@ -135,6 +172,34 @@ export interface SignalHealth {
   domReadCount: number;
   /** Seconds from capture start of the last caption mutation; absent when none. */
   captionHeartbeatLastT?: number;
+  /**
+   * Capture-time ASR mode; "rearmed" = the caption-heartbeat watchdog re-armed
+   * Transcribe Streaming mid-meeting. Absent on pre-Gate-0 payloads = "streaming".
+   */
+  asrMode?: AsrCaptureMode;
+  /** Watchdog re-arm count; > 0 only when `asrMode` is "rearmed". */
+  rearmCount?: number;
+  /**
+   * The forced cross-check tab stream ran alongside captions (Gate 0). Meetings
+   * captured captions-only without it are flagged and Gate C defaults conservative.
+   */
+  crossCheckActive?: boolean;
+}
+
+/**
+ * How the extension sourced ASR during capture (Gate 0). Distinct from AsrSource,
+ * which records what text the pipeline ended up grounded on.
+ */
+export type AsrCaptureMode = "streaming" | "captions-primary" | "rearmed";
+
+/** Gate 0 extension flags (per-tenant; default OFF until telemetry proves captions). */
+export interface CaptionsPrimaryConfig {
+  captionsPrimaryEnabled: boolean;
+  /**
+   * Fraction of captions-primary meetings (0–1) with the cross-check tab stream
+   * forced ON — mandatory until the captions-mode P3 signals are validated.
+   */
+  crossCheckFraction: number;
 }
 
 /** Fine-grained pipeline progress (internal; users see the coarse MeetingStatus). */
@@ -208,10 +273,25 @@ export interface GateDecision {
   reason?: string;
 }
 
+/**
+ * Gate B inputs: tab-source confidence stats. Batch re-ASR runs on the tab source
+ * only, so the meeting-wide AsrScores (mic included) would mask a bad tab stream.
+ */
+export interface GateBScores {
+  /** Mean per-segment ASR confidence over tab-source segments, 0–1. */
+  tabMeanConfidence: number;
+  /** 10th percentile over tab-source segments, 0–1. */
+  tabP10Confidence: number;
+  tabSegmentCount: number;
+  /** User flagged the meeting important — OR-trigger alongside the stats. */
+  flaggedImportant?: boolean;
+}
+
 /** Gate scores accumulate as phases complete — each is absent until its phase ran. */
 export interface PipelineScores {
   correlation?: CorrelationScores;
   asr?: AsrScores;
+  gateB?: GateBScores;
   invariants?: InvariantScores;
   verification?: VerificationScores;
   /** Gate evaluations in execution order — the per-meeting escalation audit trail. */
@@ -226,6 +306,61 @@ export interface BatchJobRef {
   taskToken: string;
   /** ISO-8601 UTC. */
   startedAt: string;
+}
+
+/**
+ * jobName-keyed bookkeeping item for the Gate B `.waitForTaskToken` wait: the
+ * EventBridge job-state event carries only the job name, so the callback Lambda
+ * resolves the token and the owning meeting from this record before SendTaskSuccess.
+ */
+export interface BatchJobTokenRecord {
+  /** `{tenantId}--{meetingId}--{attempt}` — the lookup key. */
+  jobName: string;
+  taskToken: string;
+  tenantId: string;
+  meetingId: string;
+  /** ISO-8601 UTC. */
+  startedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Batch re-ASR (Gate B, M5): Transcribe Batch on the tab source, merged by time,
+// then looped back through P2 — batch spk_N labels are never trusted raw.
+// ---------------------------------------------------------------------------
+
+/**
+ * One diarized segment from the Transcribe Batch pass. Batch emits its own
+ * segmentation and its own `spk_N` numbering, unrelated to streaming labels —
+ * which is why the merged transcript must re-run P2 before P4.
+ */
+export interface BatchSegment {
+  /** Batch's opaque diarization label (e.g. "spk_0"). */
+  speakerLabel: string;
+  /** Seconds from capture start. */
+  startTime: number;
+  endTime: number;
+  text: string;
+  /** Average per-word confidence, 0–1. */
+  confidence: number;
+}
+
+/** Which ASR pass a merged segment's text survived from. */
+export type SegmentProvenance = "streaming" | "batch";
+
+/**
+ * Post-merge segment: batch text preferred where time alignment found a match,
+ * P2 `segId` preserved so anchors/edits survive the merge.
+ */
+export interface MergedSegment extends DiarizedSegment {
+  segId: string;
+  provenance: SegmentProvenance;
+}
+
+/** Merge output — fed back through P2, published with `asrSource: "batch-merged"`. */
+export interface BatchMergeResult {
+  segments: MergedSegment[];
+  /** Fraction of segments whose text came from the batch pass, 0–1. */
+  batchFraction: number;
 }
 
 /** `pipeline` attribute on the meeting item — the per-meeting fidelity audit trail. */
@@ -301,11 +436,21 @@ export interface SegmentsAppendResponse {
 export interface MeetingFinalizeRequest extends MeetingIngestPayload {
   captureId: string;
   signalHealth?: SignalHealth;
+  /** Consent recorded on the meeting item (§7); absent = tier 0. */
+  audioConsent?: AudioConsent;
+  /** Present only under consent Tier 2 — makes the 202 carry presigned PUT URLs. */
+  audioPending?: AudioPendingDeclaration;
 }
 
 /** Returned with 202 — processing continues asynchronously in the pipeline. */
 export interface MeetingFinalizeResponse {
   meetingId: string;
+  /**
+   * Presigned S3 PUT URL per declared source (Tier 2 only). Backend-signed
+   * because the identity-pool role cannot be IAM-scoped to the
+   * `{tenantId}/{meetingId}/audio/*` prefix.
+   */
+  audioUploadUrls?: Partial<Record<AudioSource, string>>;
 }
 
 /**
@@ -439,4 +584,28 @@ export interface MeetingSummary {
 export interface MeetingRecord extends Meeting {
   segments: LabeledSegment[];
   summary?: MeetingSummary;
+}
+
+// ---------------------------------------------------------------------------
+// Fleet telemetry (M6): escalation / needs_review rate counters feeding the
+// CloudWatch alarms on the calibrated gate thresholds.
+// ---------------------------------------------------------------------------
+
+/**
+ * Aggregated counters over a time window. Rates are precomputed at emission so
+ * alarms read a single metric instead of a math expression.
+ */
+export interface PipelineTelemetryCounters {
+  meetings: number;
+  /** Meetings where any gate escalated past the default tier/path. */
+  escalations: number;
+  /** Meetings published with status "needs_review". */
+  needsReview: number;
+  /** escalations / meetings, 0–1; 0 when `meetings` is 0. */
+  escalationRate: number;
+  /** needsReview / meetings, 0–1; 0 when `meetings` is 0. */
+  needsReviewRate: number;
+  /** ISO-8601 UTC. */
+  windowStart: string;
+  windowEnd: string;
 }

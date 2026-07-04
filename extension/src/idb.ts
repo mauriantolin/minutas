@@ -1,5 +1,6 @@
 import type {
   CaptionEvent,
+  ConsentTier,
   DiarizedSegment,
   MeetingFinalizeRequest,
   SignalHealth,
@@ -21,6 +22,10 @@ export interface CaptureMeta {
   title: string;
   startedAt: string;
   localUserName: string;
+  // Consent must survive a crash: orphan recovery rebuilds the finalize payload
+  // from this record, and audio recorded under tier 2 should still be declared.
+  consentTier?: ConsentTier;
+  consentGrantedAt?: string;
 }
 
 export interface SegmentCheckpoint {

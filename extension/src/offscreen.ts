@@ -1,8 +1,9 @@
 import type { AwsCredentialIdentity } from "@aws-sdk/types";
-import type { AudioSource, DiarizedSegment } from "@teams-agent-core/shared";
+import type { AsrCaptureMode, AudioSource, DiarizedSegment } from "@teams-agent-core/shared";
 import { transcribeCredentialsFromToken, refreshedTranscribeCredentials } from "./offscreen-creds.js";
 import { transcribeStream } from "./transcribe.js";
 import { saveCheckpoint } from "./idb.js";
+import { appendAudioChunk } from "./audio-store.js";
 import { CONFIG } from "./config.js";
 
 // The offscreen document does the audio work a service worker can't: getUserMedia, an
@@ -38,6 +39,12 @@ const VAD_RMS_THRESHOLD = 0.015;
 const VAD_SILENCE_MS = 2000;
 const VAD_PREROLL_S = 0.3;
 
+// Gate 0 idle mode: the worklet queue doubles as the in-RAM PCM ring buffer
+// (never persisted, independent of the consent ladder). 125 = chunks/s at the
+// worklet's 8 ms cadence — same math as MAX_QUEUE_CHUNKS.
+const RING_CHUNKS = CONFIG.pcmRingSeconds * 125;
+const WATCHDOG_POLL_MS = 5000;
+
 const segments: DiarizedSegment[] = [];
 let finalsSinceCheckpoint = 0;
 let captureId = "";
@@ -46,7 +53,25 @@ let credentials: () => Promise<AwsCredentialIdentity>;
 let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 let refreshing: Promise<void> | undefined;
 
-type Pipe = { rotate: () => void; endInput: () => void; teardown: () => void; done: Promise<void> };
+let asrMode: AsrCaptureMode = "streaming";
+let rearmCount = 0;
+// First moment tab speech energy was seen with no finalized caption since;
+// 0 while captions are keeping up (or nobody speaks). Silence alone must never
+// count as caption death — >20 s lulls happen in virtually every meeting, and
+// a one-way rearm on them would end every captions-primary run within minutes.
+let speechWithoutCaptionSince = 0;
+let watchdogTimer: ReturnType<typeof setInterval> | undefined;
+
+let recorder: MediaRecorder | undefined;
+let recorderWrites: Promise<unknown> = Promise.resolve();
+
+type Pipe = {
+  rotate: () => void;
+  rearm: () => void;
+  endInput: () => void;
+  teardown: () => void;
+  done: Promise<void>;
+};
 let pipes: Pipe[] = [];
 
 function emitLive(r: { source: AudioSource; speakerLabel: string; text: string; isPartial: boolean }) {
@@ -72,7 +97,12 @@ function rms(bytes: Uint8Array): number {
   return Math.sqrt(sum / (samples.length || 1));
 }
 
-async function startSource(source: AudioSource, media: MediaStream, gated: boolean): Promise<void> {
+async function startSource(
+  source: AudioSource,
+  media: MediaStream,
+  gated: boolean,
+  startIdle: boolean,
+): Promise<void> {
   const ctx = new AudioContext({ sampleRate: CONFIG.sampleRate });
   await ctx.audioWorklet.addModule(chrome.runtime.getURL("pcm-worklet.js"));
   const node = ctx.createMediaStreamSource(media);
@@ -83,6 +113,10 @@ async function startSource(source: AudioSource, media: MediaStream, gated: boole
   type Chunk = { data: Uint8Array; t: number };
   const queue: Chunk[] = [];
   const preroll: Chunk[] = [];
+  // Captions-primary: the whole graph runs but nothing is sent to Transcribe;
+  // the queue is trimmed to a ring so a watchdog re-arm can flush the last
+  // ~pcmRingSeconds into the fresh stream (re-arm latency loses no speech).
+  let idle = startIdle;
   let paused = false;
   let silentSince = 0;
   let ended = false;
@@ -97,6 +131,14 @@ async function startSource(source: AudioSource, media: MediaStream, gated: boole
   worklet.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
     if (ended) return;
     const chunk = { data: new Uint8Array(e.data), t: (Date.now() - captureEpoch) / 1000 };
+    if (
+      source === "tab" &&
+      watchdogTimer &&
+      !speechWithoutCaptionSince &&
+      rms(chunk.data) >= VAD_RMS_THRESHOLD
+    ) {
+      speechWithoutCaptionSince = Date.now();
+    }
     if (gated) {
       if (rms(chunk.data) >= VAD_RMS_THRESHOLD) {
         silentSince = 0;
@@ -121,9 +163,10 @@ async function startSource(source: AudioSource, media: MediaStream, gated: boole
       }
     }
     queue.push(chunk);
-    if (queue.length > MAX_QUEUE_CHUNKS) {
+    const cap = idle ? RING_CHUNKS : MAX_QUEUE_CHUNKS;
+    while (queue.length > cap) {
       queue.shift();
-      rotateRequested = true;
+      if (!idle) rotateRequested = true;
     }
     notify();
   };
@@ -139,6 +182,10 @@ async function startSource(source: AudioSource, media: MediaStream, gated: boole
     rotateRequested = true;
     notify();
   };
+  const rearm = () => {
+    idle = false;
+    notify();
+  };
   const teardown = () => {
     worklet.port.onmessage = null;
     node.disconnect();
@@ -150,6 +197,13 @@ async function startSource(source: AudioSource, media: MediaStream, gated: boole
 
   const done = (async () => {
     while (!ended || queue.length > 0) {
+      // A ring that was never re-armed is discarded on stop — captions carried
+      // the meeting, so transcribing the last 60 s would be noise, not signal.
+      if (idle) {
+        if (ended) break;
+        await waitWake();
+        continue;
+      }
       if (queue.length === 0) {
         await waitWake();
         continue;
@@ -181,7 +235,7 @@ async function startSource(source: AudioSource, media: MediaStream, gated: boole
     }
   })();
 
-  pipes.push({ rotate, endInput, teardown, done });
+  pipes.push({ rotate, rearm, endInput, teardown, done });
 }
 
 function tokenExpiryMs(idToken: string): number {
@@ -224,14 +278,71 @@ function refreshCredentials(): Promise<void> {
   return refreshing;
 }
 
-async function start(streamId: string, idToken: string, id: string) {
+// Consent tier >= 1 (§7): tee the RAW tab MediaStream (still at its native 48 kHz —
+// the 16 k resample happens inside the AudioContext) into MediaRecorder Opus chunks
+// appended to OPFS. Tab only: batch re-ASR never consumes the mic source.
+function startRecorder(media: MediaStream) {
+  let seq = 0;
+  recorder = new MediaRecorder(media, { mimeType: "audio/webm;codecs=opus" });
+  recorder.ondataavailable = (e) => {
+    if (!e.data.size) return;
+    const n = seq++;
+    recorderWrites = recorderWrites
+      .then(() => appendAudioChunk(captureId, "tab", n, e.data))
+      .catch(() => {});
+  };
+  recorder.start(CONFIG.audioTimesliceMs);
+}
+
+async function stopRecorder(): Promise<void> {
+  const r = recorder;
+  recorder = undefined;
+  if (!r || r.state === "inactive") return;
+  // onstop fires after the final dataavailable; the write chain then holds the
+  // last chunk's OPFS write, so awaiting it makes the recording purge/upload-safe.
+  await new Promise<void>((resolve) => {
+    r.onstop = () => resolve();
+    r.stop();
+  });
+  await recorderWrites;
+}
+
+function rearmStreaming() {
+  clearInterval(watchdogTimer);
+  watchdogTimer = undefined;
+  // One-way: captions coming back mid-meeting never flips back to captions-primary.
+  asrMode = "rearmed";
+  rearmCount += 1;
+  pipes.forEach((p) => p.rearm());
+  chrome.runtime.sendMessage({ type: "ASR_REARMED", rearmCount }).catch(() => {});
+}
+
+function startWatchdog() {
+  speechWithoutCaptionSince = 0;
+  watchdogTimer = setInterval(() => {
+    if (
+      speechWithoutCaptionSince &&
+      Date.now() - speechWithoutCaptionSince > CONFIG.captionHeartbeatTimeoutSec * 1000
+    ) {
+      rearmStreaming();
+    }
+  }, WATCHDOG_POLL_MS);
+}
+
+type StartOpts = { consentTier: number; captionsPrimary: boolean; crossCheck: boolean };
+
+async function start(streamId: string, idToken: string, id: string, opts: StartOpts) {
   segments.length = 0;
   finalsSinceCheckpoint = 0;
   pipes = [];
   captureId = id;
   captureEpoch = Date.now();
+  asrMode = opts.captionsPrimary ? "captions-primary" : "streaming";
+  rearmCount = 0;
+  recorderWrites = Promise.resolve();
   credentials = transcribeCredentialsFromToken(idToken);
   scheduleRefresh(refreshDelayMs(idToken));
+  if (opts.captionsPrimary) startWatchdog();
 
   const tabMedia = await navigator.mediaDevices.getUserMedia({
     audio: {
@@ -239,7 +350,8 @@ async function start(streamId: string, idToken: string, id: string) {
       mandatory: { chromeMediaSource: "tab", chromeMediaSourceId: streamId },
     },
   });
-  void startSource("tab", tabMedia, false);
+  if (opts.consentTier >= 1) startRecorder(tabMedia);
+  void startSource("tab", tabMedia, false, opts.captionsPrimary && !opts.crossCheck);
 
   try {
     // Echo/noise cancellation is critical: without it the mic picks up the OTHER person's
@@ -247,7 +359,11 @@ async function start(streamId: string, idToken: string, id: string) {
     const mic = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
-    void startSource("mic", mic, true);
+    // The mic never idles: it is the only audio containing the local user, and
+    // captions are speaker anchors — nothing promotes captionTimeline into
+    // transcript content — so an idle mic would silently drop the local user's
+    // speech from every captions-primary transcript.
+    void startSource("mic", mic, true, false);
   } catch {
     // Surface it — usually a missing mic permission (grant it from the popup).
     emitLive({
@@ -263,7 +379,9 @@ async function start(streamId: string, idToken: string, id: string) {
 // results lag the audio); only then end the input and drain the final events.
 async function stopAndDrain(): Promise<DiarizedSegment[]> {
   clearTimeout(refreshTimer);
-  await new Promise((r) => setTimeout(r, GRACE_MS));
+  clearInterval(watchdogTimer);
+  watchdogTimer = undefined;
+  await Promise.all([stopRecorder(), new Promise((r) => setTimeout(r, GRACE_MS))]);
   pipes.forEach((p) => p.endInput());
   await Promise.race([
     Promise.allSettled(pipes.map((p) => p.done)),
@@ -279,11 +397,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "START") {
     // Ack only once the audio stream is actually open — a synchronous ok would
     // let the service worker record an active capture that records nothing.
-    start(msg.streamId, msg.idToken, msg.captureId)
+    start(msg.streamId, msg.idToken, msg.captureId, {
+      consentTier: msg.consentTier ?? 0,
+      captionsPrimary: !!msg.captionsPrimary,
+      crossCheck: !!msg.crossCheck,
+    })
       .then(() => sendResponse({ ok: true }))
       .catch((e) => sendResponse({ error: String(e) }));
   } else if (msg.type === "STOP") {
     stopAndDrain().then((segs) => sendResponse({ segments: segs }));
+  } else if (msg.type === "CAPTION_HEARTBEAT") {
+    speechWithoutCaptionSince = 0;
+    sendResponse({ ok: true });
   }
   return true;
 });

@@ -62,8 +62,8 @@ export const finalize = async (event: LifecycleEvent) => {
   if (!Array.isArray(payload.segments) || !payload.startedAt) {
     return json(400, { error: "segments and startedAt required" });
   }
-  const meetingId = await finalizeMeeting(tenantId, id, payload, userName);
-  return json(202, { meetingId });
+  const response = await finalizeMeeting(tenantId, id, payload, userName);
+  return json(202, response);
 };
 
 /** POST /meetings/{id}/reprocess — restart the pipeline on a fresh execution. */
