@@ -419,22 +419,6 @@ export default function SettingsPage() {
             </p>
           </CardContent>
         </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">Extensión</CardTitle>
-            <CardDescription>
-              La captura de reuniones de Teams se hace desde la extensión de navegador.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p className="text-xs text-muted-foreground">
-              Instalala desde la carpeta <code className="font-mono">extension/</code> del
-              proyecto (modo desarrollador → &quot;Cargar descomprimida&quot;). La extensión usa
-              esta misma cuenta: iniciá sesión con tu email en el popup.
-            </p>
-          </CardContent>
-        </Card>
       </div>
 
       <EmojiNameDialog
