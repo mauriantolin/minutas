@@ -255,6 +255,25 @@ export default function SettingsPage() {
 
         <Card>
           <CardHeader>
+            <CardTitle className="text-sm font-medium">Extensión de Chrome</CardTitle>
+            <CardDescription>
+              Descargá el paquete, descomprimilo en una carpeta fija y cargalo en{" "}
+              <span className="font-mono">chrome://extensions</span> → Modo de
+              desarrollador → Cargar descomprimida.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button asChild>
+              <a href="/minutas-extension.zip" download>
+                <Download />
+                Descargar extensión
+              </a>
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
             <CardTitle className="text-sm font-medium">Apariencia</CardTitle>
           </CardHeader>
           <CardContent className="flex items-center justify-between gap-4">

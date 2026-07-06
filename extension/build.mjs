@@ -1,5 +1,10 @@
 import { build, context } from "esbuild";
 import { cpSync, mkdirSync } from "node:fs";
+import { zipDir } from "../scripts/zip-dir.mjs";
+
+// The dashboard's Configuración page serves this for download, so every extension
+// build refreshes it — the zip is never stale relative to the shipped code.
+const ZIP_OUT = "../web/public/minutas-extension.zip";
 
 const entries = {
   background: "src/background.ts",
@@ -29,4 +34,6 @@ if (process.argv.includes("--watch")) {
   await ctx.watch();
 } else {
   await build(opts);
+  const { files } = zipDir("dist", ZIP_OUT, { exclude: /\.map$/ });
+  console.log(`packaged ${files} files -> ${ZIP_OUT}`);
 }
