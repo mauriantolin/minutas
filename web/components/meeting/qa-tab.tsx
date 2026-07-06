@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUp, Copy, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/components/auth-provider";
-import { TurnRefText } from "@/components/turn-ref-text";
+import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
@@ -139,7 +139,7 @@ export function QaTab({ meeting, knownIds, onNavigateToTurn }: QaTabProps) {
                 <UserBubble question={m.q} />
                 <div className="group flex max-w-[85%] items-start gap-1 self-start">
                   <div className="rounded-lg rounded-bl-sm bg-muted px-3 py-2 text-sm">
-                    <TurnRefText
+                    <Markdown
                       text={m.a}
                       onNavigate={onNavigateToTurn}
                       knownIds={knownIds}
