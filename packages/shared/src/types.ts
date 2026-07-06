@@ -83,11 +83,21 @@ export type MeetingStatus =
 export type AudioSource = "tab" | "mic";
 
 /**
+ * Where a transcript segment came from: an audio ASR stream, or the Teams
+ * live-captions scrape (captions-primary mode — speaker name already known).
+ */
+export type SegmentSource = AudioSource | "caption";
+
+/**
  * A raw segment as emitted by Amazon Transcribe streaming (with ShowSpeakerLabel).
  * `speakerLabel` is Transcribe's opaque label (e.g. "spk_0") — NOT a real name yet.
  */
 export interface DiarizedSegment {
-  source: AudioSource;
+  source: SegmentSource;
+  /**
+   * Diarization label from ASR ("spk_0"…), or the real display name verbatim
+   * when `source === "caption"` (captions arrive pre-attributed).
+   */
   speakerLabel: string;
   /** Seconds from capture start. */
   startTime: number;
@@ -142,7 +152,7 @@ export type SpeakerLabelSource = "mic" | "caption" | "timeline" | "unresolved";
 export interface CorrelatedSegment extends LabeledSegment {
   /** Stable id (`s{n}` in raw-payload order) — survives every downstream rewrite. */
   segId: string;
-  source: AudioSource;
+  source: SegmentSource;
   labelSource: SpeakerLabelSource;
   /** 0–1: caption match score / vote share; 1 for mic; 0 when unresolved. */
   speakerConfidence: number;

@@ -234,6 +234,135 @@ test("v2: a caption-anchor tie surfaces in labelMarginMin for Gate A", () => {
   assert.equal(scores.labelMarginMin, 0);
 });
 
+test("v2: pure caption-segment meeting resolves directly with real names", () => {
+  const segments: DiarizedSegment[] = [
+    {
+      source: "caption",
+      speakerLabel: "María López",
+      startTime: 0,
+      endTime: 3,
+      text: "arrancamos con el presupuesto del trimestre",
+    },
+    {
+      source: "caption",
+      speakerLabel: "Juan Pérez",
+      startTime: 3,
+      endTime: 6,
+      text: "de acuerdo, revisemos los números",
+    },
+  ];
+  const { segments: out, scores } = correlateSpeakersV2({
+    segments,
+    speakerTimeline: [],
+    localUserName: "Mauricio",
+  });
+  assert.deepEqual(out.map((s) => s.speaker), ["María López", "Juan Pérez"]);
+  assert.ok(out.every((s) => s.resolved));
+  assert.ok(out.every((s) => s.labelSource === "caption"));
+  assert.ok(out.every((s) => s.speakerConfidence === 1 && s.labelMargin === 1));
+  assert.equal(scores.unresolvedPct, 0);
+  assert.equal(scores.labelMarginMin, 1);
+});
+
+test("v2: caption segments skip anchor matching against the caption timeline", () => {
+  // A same-text caption event authored by someone else must not re-label the
+  // pre-attributed segment — direct resolution, no self-matching.
+  const segments: DiarizedSegment[] = [
+    {
+      source: "caption",
+      speakerLabel: "María López",
+      startTime: 10,
+      endTime: 14,
+      text: "revisemos el presupuesto del tercer trimestre",
+    },
+  ];
+  const captionTimeline: CaptionEvent[] = [
+    {
+      t: 11,
+      speakerName: "Pedro Gómez",
+      text: "revisemos el presupuesto del tercer trimestre",
+      final: true,
+    },
+  ];
+  const { segments: out } = correlateSpeakersV2({
+    segments,
+    speakerTimeline: [],
+    captionTimeline,
+    localUserName: "Mauricio",
+  });
+  assert.equal(out[0]?.speaker, "María López");
+  assert.equal(out[0]?.labelSource, "caption");
+  assert.equal(out[0]?.labelMargin, 1);
+});
+
+test("v2: mixed caption + mic meeting resolves both directly", () => {
+  const segments: DiarizedSegment[] = [
+    { source: "mic", speakerLabel: "spk_0", startTime: 0, endTime: 4, text: "hola a todos" },
+    {
+      source: "caption",
+      speakerLabel: "Juan Pérez",
+      startTime: 4,
+      endTime: 8,
+      text: "empecemos con la agenda",
+    },
+  ];
+  const { segments: out, scores } = correlateSpeakersV2({
+    segments,
+    speakerTimeline: [],
+    localUserName: "Mauricio",
+  });
+  assert.equal(out[0]?.speaker, "Mauricio");
+  assert.equal(out[0]?.labelSource, "mic");
+  assert.equal(out[1]?.speaker, "Juan Pérez");
+  assert.equal(out[1]?.labelSource, "caption");
+  assert.equal(scores.unresolvedPct, 0);
+  assert.equal(scores.labelMarginMin, 1);
+});
+
+test("v2: mixed caption + tab keeps anchor/voting for the ASR segments", () => {
+  const segments: DiarizedSegment[] = [
+    {
+      source: "caption",
+      speakerLabel: "María López",
+      startTime: 0,
+      endTime: 4,
+      text: "estado general del proyecto",
+    },
+    { source: "tab", speakerLabel: "spk_0", startTime: 1, endTime: 8, text: "punto A", confidence: 0.9 },
+  ];
+  const { segments: out } = correlateSpeakersV2({
+    segments,
+    speakerTimeline: timeline,
+    localUserName: "Mauricio",
+  });
+  assert.equal(out[0]?.speaker, "María López");
+  assert.equal(out[0]?.labelSource, "caption");
+  assert.equal(out[1]?.speaker, "Juan Pérez");
+  assert.equal(out[1]?.labelSource, "timeline");
+});
+
+test("v2: caption-agreement metric is omitted when no ASR segments exist", () => {
+  const segments: DiarizedSegment[] = [
+    {
+      source: "caption",
+      speakerLabel: "María López",
+      startTime: 0,
+      endTime: 4,
+      text: "estado general del proyecto",
+    },
+  ];
+  const captionTimeline: CaptionEvent[] = [
+    { t: 1, speakerName: "María López", text: "estado general del proyecto", final: true },
+  ];
+  const { scores } = correlateSpeakersV2({
+    segments,
+    speakerTimeline: timeline,
+    captionTimeline,
+    localUserName: "Mauricio",
+  });
+  assert.equal(scores.captionAgreementPct, undefined);
+});
+
 // --- fuzzy quote matching ---------------------------------------------------
 
 test("quoteExists ignores case, accents and punctuation", () => {

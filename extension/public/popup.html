@@ -27,13 +27,18 @@
       <div class="row toggle-row">
         <label
           for="autostart"
-          title="Arranca la captura al detectar una reunión (requiere micrófono ya habilitado)"
-          >Transcripción automática</label
+          title="Captura cada reunión detectada usando los subtítulos en vivo de Teams (sin audio)"
+          >Captura automática (subtítulos de Teams)</label
         >
         <input id="autostart" type="checkbox" class="switch" />
       </div>
       <div id="consent-row">
-        <label class="field-label" for="consent">Audio de la reunión</label>
+        <label
+          class="field-label"
+          for="consent"
+          title="Grabación de audio solo en modo manual — la captura automática usa subtítulos y no graba audio"
+          >Audio de la reunión (solo modo manual)</label
+        >
         <select id="consent">
           <option value="0">Sin grabación</option>
           <option value="1">Buffer local</option>
@@ -45,6 +50,9 @@
         <span class="dot live pulse"></span>
         <span>Transcribiendo · <span id="elapsed" class="elapsed">00:00</span></span>
         <button id="view-live" class="btn-text link-right">Ver en vivo</button>
+      </div>
+      <div id="mode-row" class="field-label hidden">
+        Modo: <span id="mode-label"></span>
       </div>
       <button id="stop" class="btn btn-danger hidden">■ Detener y resumir</button>
       <button id="cancel" class="btn btn-ghost hidden">Descartar captura</button>

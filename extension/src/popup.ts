@@ -38,14 +38,20 @@ function stopElapsed() {
   elapsedTimer = undefined;
 }
 
-function setCapturing(capturing: boolean, live?: { meetingId?: string; startedAt?: string }) {
+function setCapturing(
+  capturing: boolean,
+  live?: { meetingId?: string; startedAt?: string; mode?: string },
+) {
   show("start", !capturing);
   show("stop", capturing);
   show("cancel", capturing);
   show("live-row", capturing);
+  show("mode-row", capturing);
   show("consent-row", !capturing);
   if (capturing) {
     liveMeetingId = live?.meetingId;
+    $("mode-label").textContent =
+      live?.mode === "captions" ? "Subtítulos de Teams" : "Audio (Transcribe)";
     startElapsed(live?.startedAt);
   } else {
     liveMeetingId = undefined;
@@ -124,12 +130,13 @@ async function enterCaptureView(token: string) {
   $("user-email").textContent = email;
   $("avatar").textContent = email.slice(0, 2).toUpperCase();
 
-  const { consentTierPref, autoStartPref } = await chrome.storage.local.get([
+  const { consentTierPref, autoCapture } = await chrome.storage.local.get([
     "consentTierPref",
-    "autoStartPref",
+    "autoCapture",
   ]);
   ($("consent") as HTMLSelectElement).value = String(consentTierPref ?? 0);
-  ($("autostart") as HTMLInputElement).checked = !!autoStartPref;
+  // Default ON: absent means enabled.
+  ($("autostart") as HTMLInputElement).checked = autoCapture !== false;
 
   // Reflect whatever the background is actually doing — survives popup close / SW restart.
   const state = await chrome.runtime.sendMessage({ type: "GET_STATE" });
@@ -154,10 +161,11 @@ $("consent").addEventListener("change", () =>
   void chrome.storage.local.set({ consentTierPref: consentTier() }),
 );
 
-// Preference only for now: the meeting-join auto-start path (§4.1) lives in the
-// service worker and is wired in a later milestone.
+// Read by the service worker on MEETING_DETECTED: ON = every detected meeting is
+// captured automatically from the Teams live captions (audio recording only applies
+// to manual captures — captions mode never records audio).
 $("autostart").addEventListener("change", (e) =>
-  void chrome.storage.local.set({ autoStartPref: (e.target as HTMLInputElement).checked }),
+  void chrome.storage.local.set({ autoCapture: (e.target as HTMLInputElement).checked }),
 );
 
 $("signin").addEventListener("click", async () => {

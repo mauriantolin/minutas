@@ -86,6 +86,11 @@ const VOTE_WINDOW_S = 30;
  * windowed voting against the active-speaker timeline as fallback, numeric
  * per-segment confidence/margin, and the Gate A score inputs.
  *
+ * Caption-source segments (captions-primary mode) arrive pre-attributed —
+ * `speakerLabel` is the real display name — so they resolve directly and skip
+ * both anchor matching and voting: they ARE the captions, and anchoring them
+ * against the caption timeline would be self-matching noise.
+ *
  * segIds are `s{n}` in raw-payload array order — raw-payload.json is durable
  * and order-stable, so ids are identical on every reprocess.
  */
@@ -103,6 +108,10 @@ export function correlateSpeakersV2(input: CorrelateV2Input): CorrelationResult 
     const segId = `s${i}`;
     if (seg.source === "mic") {
       out.push(toCorrelated(seg, segId, localUserName, 1, 1, "mic"));
+      return;
+    }
+    if (seg.source === "caption") {
+      out.push(toCorrelated(seg, segId, seg.speakerLabel, 1, 1, "caption"));
       return;
     }
 
@@ -203,7 +212,9 @@ function windowedVote(
   const winEnd = seg.endTime + VOTE_WINDOW_S;
   const tally = new Map<string, number>();
   for (const s of segments) {
-    if (s.source === "mic" || s.speakerLabel !== seg.speakerLabel) continue;
+    // Only tab ASR segments vote: mic is hard-labeled and caption speakerLabels
+    // are real names, not recyclable spk_N labels.
+    if (s.source !== "tab" || s.speakerLabel !== seg.speakerLabel) continue;
     if (s.endTime < winStart || s.startTime > winEnd) continue;
     for (const [name, dur] of overlapByName(s.startTime, s.endTime, intervals)) {
       tally.set(name, (tally.get(name) ?? 0) + dur);

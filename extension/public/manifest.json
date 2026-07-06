@@ -3,7 +3,7 @@
   "name": "Teams Meeting Assistant",
   "version": "0.1.0",
   "description": "Transcribes your Microsoft Teams meetings and syncs summaries to your workspace.",
-  "permissions": ["tabCapture", "offscreen", "storage", "scripting", "activeTab"],
+  "permissions": ["tabCapture", "offscreen", "storage", "scripting", "activeTab", "notifications"],
   "host_permissions": [
     "https://teams.microsoft.com/*",
     "https://*.teams.microsoft.com/*",

@@ -1,7 +1,14 @@
-import type { CaptionEvent, SignalHealth, SpeakerTimelineEntry } from "@teams-agent-core/shared";
+import type {
+  CaptionEvent,
+  DiarizedSegment,
+  SignalHealth,
+  SpeakerTimelineEntry,
+} from "@teams-agent-core/shared";
 import {
   captionsPresent,
+  enableCaptions,
   observeCaptions,
+  observeMeetingPresence,
   readActiveSpeaker,
   readMeetingTitle,
   readLocalUserName,
@@ -11,11 +18,19 @@ import { mountWidget, type LiveWidget, type TagId } from "./widget.js";
 
 // Runs inside the Teams PWA. Captures the two free DOM signals — live captions
 // (MutationObserver, primary) and the active-speaker ring (400 ms poll, fallback) —
-// plus signalHealth over both, and renders a live-transcript overlay driven by
-// LIVE_LINE messages from the offscreen document.
+// plus signalHealth over both, and renders a live-transcript overlay. In audio mode
+// the overlay is driven by LIVE_LINE messages from the offscreen document; in
+// captions mode the caption observer feeds it directly and each final caption is
+// synthesized into a DiarizedSegment shipped over the same SEGMENT_FINAL path the
+// offscreen document uses.
 
+type CaptureMode = "audio" | "captions";
+
+let captureMode: CaptureMode = "audio";
 let timeline: SpeakerTimelineEntry[] = [];
 let captionTimeline: CaptionEvent[] = [];
+let captionSegments: DiarizedSegment[] = [];
+let pendingCaption: CaptionEvent | null = null;
 let startEpoch = 0;
 let lastName: string | null = null;
 let localUserName = "Yo";
@@ -94,6 +109,39 @@ function labelFor(source: string, speakerLabel: string): string {
   return lastName || speakerLabel;
 }
 
+// --- Captions-primary segments (captions ARE the transcript) -----------------
+
+// A caption's true end isn't observable, so segment N ships when final N+1
+// arrives (endTime = its t); the last one is flushed on stop with an estimate.
+const estimatedEndTime = (e: CaptionEvent): number =>
+  e.t + Math.max(1.5, 0.35 * e.text.split(/\s+/).filter(Boolean).length);
+
+function shipCaptionSegment(e: CaptionEvent, endTime: number) {
+  const segment: DiarizedSegment = {
+    source: "caption",
+    speakerLabel: e.speakerName,
+    startTime: e.t,
+    endTime,
+    text: e.text,
+  };
+  captionSegments.push(segment);
+  chrome.runtime.sendMessage({ type: "SEGMENT_FINAL", segment }).catch(() => {});
+}
+
+function onCaptionFinal(e: CaptionEvent) {
+  captionTimeline.push(e);
+  if (captureMode !== "captions") return;
+  if (pendingCaption) shipCaptionSegment(pendingCaption, e.t);
+  pendingCaption = e;
+  widget?.renderLine(e.speakerName, e.text, false);
+}
+
+function flushPendingCaptionSegment() {
+  if (!pendingCaption) return;
+  shipCaptionSegment(pendingCaption, estimatedEndTime(pendingCaption));
+  pendingCaption = null;
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "CAPTURE_START") {
     // Tear down any leftover previous session BEFORE resetting state: its stop
@@ -103,8 +151,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (captionFlushTimer) window.clearInterval(captionFlushTimer);
     stopCaptions?.();
     stopCaptions = undefined;
+    captureMode = msg.mode === "captions" ? "captions" : "audio";
     timeline = [];
     captionTimeline = [];
+    captionSegments = [];
+    pendingCaption = null;
     captionFlushMark = 0;
     domReadCount = 0;
     speakerRingSeen = false;
@@ -118,11 +169,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     poll = window.setInterval(tick, POLL_MS);
     stopCaptions = observeCaptions(
       nowT,
-      (e) => captionTimeline.push(e),
+      onCaptionFinal,
       () => {
         captionHeartbeatLastT = nowT();
         domReadCount += 1;
         healthDirty = true;
+      },
+      (e) => {
+        if (captureMode === "captions") widget?.renderLine(e.speakerName, e.text, true);
       },
     );
     captionFlushTimer = window.setInterval(flushCaptions, CAPTION_FLUSH_MS);
@@ -138,8 +192,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   } else if (msg.type === "CAPTURE_STOP") {
     if (poll) window.clearInterval(poll);
     if (captionFlushTimer) window.clearInterval(captionFlushTimer);
+    // stopCaptions finalizes still-tracked utterances → onCaptionFinal may ship
+    // one more segment and leave a new pendingCaption, so flush after it.
     stopCaptions?.();
     stopCaptions = undefined;
+    flushPendingCaptionSegment();
     // Close the timeline: interval building assumes each reading holds until
     // the next one, so without a closing reading the final speaker's span
     // (the whole meeting, for a single presenter) yields no interval.
@@ -154,9 +211,33 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       participantNames: [...participants],
       signalHealth: signalHealth(),
       endedAt: new Date().toISOString(),
+      ...(captureMode === "captions" && { segments: captionSegments }),
     });
   } else if (msg.type === "LIVE_LINE") {
     widget?.renderLine(labelFor(msg.source, msg.speakerLabel), msg.text, msg.isPartial);
+  } else if (msg.type === "ENABLE_CAPTIONS") {
+    if (captionsPresent()) {
+      sendResponse({ enabled: true });
+    } else {
+      void enableCaptions().then((enabled) => sendResponse({ enabled }));
+    }
   }
   return true;
 });
+
+// Meeting auto-detection runs for the tab's whole lifetime: the service worker
+// decides whether a detected meeting becomes an auto capture.
+observeMeetingPresence(
+  () => {
+    chrome.runtime
+      .sendMessage({
+        type: "MEETING_DETECTED",
+        title: readMeetingTitle(),
+        startedAt: new Date().toISOString(),
+      })
+      .catch(() => {});
+  },
+  () => {
+    chrome.runtime.sendMessage({ type: "MEETING_ENDED" }).catch(() => {});
+  },
+);

@@ -238,7 +238,11 @@ export const handler = async (
     case "asrScore": {
       const payload = await getRawPayload(tenantId, meetingId);
       pipeline.phase = "ASR_SCORED";
-      pipeline.scores.asr = asrScores(payload);
+      // `delete` (not `= undefined`): the whole pipeline object is marshalled
+      // into DynamoDB, and a stale score from a prior run must not survive.
+      const asr = asrScores(payload);
+      if (asr) pipeline.scores.asr = asr;
+      else delete pipeline.scores.asr;
       // Tab-only stats: the always-high-confidence mic stream would mask a bad
       // tab stream in the meeting-wide numbers (batch re-ASR is tab-only).
       pipeline.scores.gateB = gateBScores(payload);
@@ -334,7 +338,9 @@ export const handler = async (
       pipeline.scores.correlation = scores;
       // Gate C downstream must read the merged text's quality, not the
       // streaming stats the batch pass just replaced.
-      pipeline.scores.asr = asrScores({ ...payload, segments: merged.segments });
+      const mergedAsr = asrScores({ ...payload, segments: merged.segments });
+      if (mergedAsr) pipeline.scores.asr = mergedAsr;
+      else delete pipeline.scores.asr;
       recordGate(pipeline, "gateA", ...gateAEval(scores));
       await updateMeeting(tenantId, meetingId, { pipeline, participants });
       return result(meetingId, pipeline);
@@ -406,7 +412,11 @@ export const handler = async (
         recordGate(
           pipeline,
           "gateC",
-          ...gateCEval(pipeline.scores.asr, draft),
+          ...gateCEval(
+            pipeline.scores.asr,
+            draft,
+            labeled.some((s) => s.source !== "caption"),
+          ),
         );
 
         await putCleanTranscript(tenantId, meetingId, clean);
@@ -740,7 +750,10 @@ function gateAEval(scores: CorrelationScores): [boolean, string?] {
  * declared tab upload there is no audio to re-transcribe, whatever the stats
  * say. Confidence-free tab segments score 0 and fire the gate: when consented
  * audio exists, "no signal" upgrades conservatively (a dead tab stream is the
- * strongest case for the batch pass, not a reason to skip it).
+ * strongest case for the batch pass, not a reason to skip it). With ZERO tab
+ * segments (captions-primary meetings) the gate stays closed: the merge
+ * attaches batch text to existing tab segments, so the pass could only be
+ * discarded — captions are the transcript, never clobbered by re-ASR.
  */
 function gateBEval(meeting: Meeting, scores: GateBScores): [boolean, string?] {
   if (meeting.audioConsent?.tier !== 2) {
@@ -748,6 +761,9 @@ function gateBEval(meeting: Meeting, scores: GateBScores): [boolean, string?] {
   }
   if (!meeting.audioPending?.sources.includes("tab")) {
     return [false, "no tab audio declared at finalize"];
+  }
+  if (scores.tabSegmentCount === 0) {
+    return [false, "no tab ASR segments: batch merge has nothing to attach to"];
   }
   if (scores.flaggedImportant) return [true, "meeting flagged important"];
   if (scores.tabMeanConfidence < GATE_B_MIN_TAB_MEAN_CONFIDENCE) {
@@ -767,34 +783,40 @@ function gateBEval(meeting: Meeting, scores: GateBScores): [boolean, string?] {
 
 /**
  * Gate C is driven by the programmatic P3 scores; the P4 self-report may only
- * OR-escalate, never satisfy the gate. Missing scores (legacy payloads,
- * captions mode) default conservative.
+ * OR-escalate, never satisfy the gate. Scores missing despite ASR segments
+ * (legacy payloads) default conservative; a pure-captions meeting has no ASR
+ * signal to miss, so only the self-report checks apply.
  */
 function gateCEval(
   asr: AsrScores | undefined,
   draft: CleanDraft,
+  hasAsrSegments: boolean,
 ): [boolean, string?] {
-  if (!asr) return [true, "no asr scores: conservative tier"];
-  if (asr.meanConfidence < GATE_C_MIN_MEAN_CONFIDENCE) {
-    return [
-      true,
-      `meanConfidence ${asr.meanConfidence.toFixed(2)} < ${GATE_C_MIN_MEAN_CONFIDENCE}`,
-    ];
+  if (!asr && hasAsrSegments) {
+    return [true, "no asr scores: conservative tier"];
   }
-  if (asr.p10Confidence < GATE_C_MIN_P10_CONFIDENCE) {
-    return [
-      true,
-      `p10Confidence ${asr.p10Confidence.toFixed(2)} < ${GATE_C_MIN_P10_CONFIDENCE}`,
-    ];
-  }
-  if (
-    asr.captionWerProxy !== undefined &&
-    asr.captionWerProxy > GATE_C_MAX_CAPTION_WER
-  ) {
-    return [
-      true,
-      `captionWerProxy ${asr.captionWerProxy.toFixed(2)} > ${GATE_C_MAX_CAPTION_WER}`,
-    ];
+  if (asr) {
+    if (asr.meanConfidence < GATE_C_MIN_MEAN_CONFIDENCE) {
+      return [
+        true,
+        `meanConfidence ${asr.meanConfidence.toFixed(2)} < ${GATE_C_MIN_MEAN_CONFIDENCE}`,
+      ];
+    }
+    if (asr.p10Confidence < GATE_C_MIN_P10_CONFIDENCE) {
+      return [
+        true,
+        `p10Confidence ${asr.p10Confidence.toFixed(2)} < ${GATE_C_MIN_P10_CONFIDENCE}`,
+      ];
+    }
+    if (
+      asr.captionWerProxy !== undefined &&
+      asr.captionWerProxy > GATE_C_MAX_CAPTION_WER
+    ) {
+      return [
+        true,
+        `captionWerProxy ${asr.captionWerProxy.toFixed(2)} > ${GATE_C_MAX_CAPTION_WER}`,
+      ];
+    }
   }
   if (draft.qualityScore < GATE_C_MIN_SELF_QUALITY) {
     return [true, `self-report qualityScore ${draft.qualityScore.toFixed(2)}`];
@@ -870,12 +892,21 @@ function stampTier(
 // P3 — programmatic ASR scoring.
 // ---------------------------------------------------------------------------
 
-function asrScores(payload: MeetingIngestPayload): AsrScores {
-  const confs = payload.segments
+/**
+ * Confidence stats over ASR-sourced segments only — caption segments carry no
+ * confidence by contract. A pure-captions meeting scores nothing at all
+ * (undefined, not zeros): there is no ASR signal to judge, and a zeroed score
+ * would fire Gate C spuriously. The SFN GateC Choice is isPresent-guarded, so
+ * an absent block routes to the default tier.
+ */
+function asrScores(payload: MeetingIngestPayload): AsrScores | undefined {
+  const asrSegments = payload.segments.filter((s) => s.source !== "caption");
+  if (asrSegments.length === 0) return undefined;
+  const confs = asrSegments
     .map((s) => s.confidence)
     .filter((c): c is number => c !== undefined)
     .sort((a, b) => a - b);
-  // No confidence data (legacy payload / captions mode): score 0 so Gate C
+  // ASR segments without confidence data (legacy payload): score 0 so Gate C
   // defaults conservative rather than optimistic.
   const base: AsrScores =
     confs.length === 0
@@ -911,9 +942,16 @@ function captionWerProxy(payload: MeetingIngestPayload): number | undefined {
   if (!captions.length) return undefined;
   const capTokens = tokenize(captions.map((c) => c.text).join(" "));
   // Captions cover ALL speakers (local user included) while tab audio excludes
-  // the local mic — compare against every segment so both sides cover the same
-  // speaker population.
-  const asrTokens = tokenize(payload.segments.map((s) => s.text).join(" "));
+  // the local mic — compare against every ASR segment so both sides cover the
+  // same speaker population. Caption-source segments are excluded: they ARE the
+  // captions, and self-agreement is no second opinion (a pure-captions meeting
+  // therefore emits no proxy at all).
+  const asrTokens = tokenize(
+    payload.segments
+      .filter((s) => s.source !== "caption")
+      .map((s) => s.text)
+      .join(" "),
+  );
   if (!capTokens.length || !asrTokens.length) return undefined;
   const counts = new Map<string, number>();
   for (const t of capTokens) counts.set(t, (counts.get(t) ?? 0) + 1);

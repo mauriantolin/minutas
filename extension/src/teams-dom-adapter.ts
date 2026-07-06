@@ -2,7 +2,8 @@
  * ISOLATED, FRAGILE MODULE. Everything that depends on the Teams PWA markup lives here so
  * that when Microsoft changes the DOM, only this file needs patching. Keep the public API
  * (readActiveSpeaker, readParticipants, readMeetingTitle, readLocalUserName,
- * captionsPresent, observeCaptions) stable.
+ * captionsPresent, observeCaptions, meetingPresent, observeMeetingPresence,
+ * enableCaptions) stable.
  *
  * Selector provenance (v2 client, teams.microsoft.com — cross-checked against actively
  * maintained scrapers: Vexa "verified 2026-03", Zerg00s/Live-Captions-Saver 2026-02,
@@ -59,6 +60,18 @@ const SELECTORS = {
   ],
   captionAuthor: ['[data-tid="author"]', '[class*="author"]', '[class*="displayName"]'],
   captionText: ['[data-tid="closed-caption-text"]', '[class*="caption-text"]'],
+  // In-call only: the hangup button IS the meeting signal (verified against
+  // Zerg00s/Live-Captions-Saver 2026-02).
+  hangup: [
+    "#hangup-button",
+    'button[data-tid="hangup-main-btn"]',
+    '[data-tid="hangup-leave-button"]',
+    '[data-tid="hangup-end-meeting-button"]',
+  ],
+  // Documented menu path to turn live captions on programmatically.
+  moreButton: ['button[data-tid="more-button"]', "#callingButtons-showMoreBtn"],
+  languageSpeechMenu: ["#LanguageSpeechMenuControl-id"],
+  captionsToggle: ["#closed-captions-button"],
 };
 
 // Partials mutate in place for a while; an utterance is considered final once no
@@ -206,6 +219,8 @@ type Utterance = { t: number; speakerName: string; text: string };
  * - `onFinal` fires once per utterance, with `t` = when the utterance first appeared.
  * - `onHeartbeat` fires on every caption mutation (partial or final) — the liveness
  *   signal behind `captionHeartbeatLastT`.
+ * - `onPartial` (optional) fires with the current in-progress utterance text on every
+ *   mutation — feeds the live widget in captions-primary mode.
  *
  * Observes document.body so captions enabled mid-meeting (or a re-created pane) are
  * picked up without re-arming; per-record filtering keeps the hot path cheap.
@@ -214,6 +229,7 @@ export function observeCaptions(
   now: () => number,
   onFinal: (e: CaptionEvent) => void,
   onHeartbeat: () => void,
+  onPartial?: (e: CaptionEvent) => void,
 ): () => void {
   const itemSel = SELECTORS.captionItem.join(",");
   const paneSel = SELECTORS.captionPane.join(",");
@@ -250,7 +266,9 @@ export function observeCaptions(
     // No author node ever seen for this item: an unattributable final would
     // anchor downstream speaker labels to a fake name — drop it.
     if (!speakerName) return;
-    tracked.set(item, { t: prev?.t ?? now(), speakerName, text });
+    const utterance = { t: prev?.t ?? now(), speakerName, text };
+    tracked.set(item, utterance);
+    onPartial?.({ ...utterance, final: false });
     if (activeItem && activeItem !== item) finalize(activeItem);
     activeItem = item;
     clearTimeout(stabilityTimer);
@@ -295,4 +313,86 @@ export function observeCaptions(
     clearTimeout(stabilityTimer);
     for (const el of [...tracked.keys()]) finalize(el);
   };
+}
+
+/** Is a call/meeting live in this tab right now? Hangup-button presence is the signal. */
+export function meetingPresent(): boolean {
+  for (const root of roots()) {
+    if (firstMatch(root, SELECTORS.hangup)) return true;
+  }
+  return false;
+}
+
+const PRESENCE_POLL_MS = 2000;
+// Join fires only after the hangup button held for ~3 s (pre-join screens flash it);
+// leave only after ~8 s gone — shorter absences are Teams re-rendering, not an exit.
+const JOIN_DEBOUNCE_MS = 3000;
+const LEAVE_DEBOUNCE_MS = 8000;
+
+/**
+ * Watches meeting presence and fires `onJoin` / `onLeave` on debounced transitions.
+ * Runs permanently (a Teams tab hosts many meetings over its lifetime).
+ */
+export function observeMeetingPresence(onJoin: () => void, onLeave: () => void): () => void {
+  let inMeeting = false;
+  let presentSince = 0;
+  let absentSince = 0;
+  const timer = window.setInterval(() => {
+    if (meetingPresent()) {
+      absentSince = 0;
+      if (inMeeting) return;
+      if (!presentSince) presentSince = Date.now();
+      else if (Date.now() - presentSince >= JOIN_DEBOUNCE_MS) {
+        inMeeting = true;
+        presentSince = 0;
+        onJoin();
+      }
+    } else {
+      presentSince = 0;
+      if (!inMeeting) return;
+      if (!absentSince) absentSince = Date.now();
+      else if (Date.now() - absentSince >= LEAVE_DEBOUNCE_MS) {
+        inMeeting = false;
+        absentSince = 0;
+        onLeave();
+      }
+    }
+  }, PRESENCE_POLL_MS);
+  return () => window.clearInterval(timer);
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+function clickFirst(selectors: string[]): boolean {
+  for (const root of roots()) {
+    const el = firstMatch(root, selectors);
+    if (el instanceof HTMLElement) {
+      el.click();
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Best-effort programmatic captions enable via the in-call menu:
+ * More → Language and speech → Turn on live captions. Verified with
+ * captionsPresent() afterwards; the menu is closed (Escape) regardless.
+ */
+export async function enableCaptions(): Promise<boolean> {
+  try {
+    if (!clickFirst(SELECTORS.moreButton)) return false;
+    await sleep(600);
+    if (!clickFirst(SELECTORS.languageSpeechMenu)) return false;
+    await sleep(600);
+    if (!clickFirst(SELECTORS.captionsToggle)) return false;
+    await sleep(2000);
+    return captionsPresent();
+  } finally {
+    for (const root of roots()) {
+      root.body?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }),
+      );
+    }
+  }
 }

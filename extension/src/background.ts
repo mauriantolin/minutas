@@ -21,6 +21,7 @@ import {
   listPendingFinalizes,
   saveCaptionCheckpoint,
   saveCaptureMeta,
+  saveCheckpoint,
   savePendingFinalize,
   type PendingFinalize,
 } from "./idb.js";
@@ -35,9 +36,17 @@ import {
 // checkpoints, unsent finalize payloads) lives in IndexedDB, shared with the offscreen
 // document, and is swept on service-worker startup.
 
+// "audio" = manual path (offscreen document + Transcribe); "captions" = the Teams
+// caption scrape IS the transcript — no offscreen document, no tabCapture, no mic, $0.
+type CaptureMode = "audio" | "captions";
+
 type CaptureState = {
   activeTabId: number;
   captureId: string;
+  // Absent on legacy state = "audio" (pre-captions-mode semantics).
+  mode?: CaptureMode;
+  // Auto-started captures auto-stop on meeting-presence loss; manual ones never do.
+  autoStarted?: boolean;
   meetingId?: string;
   seq: number;
   pending: DiarizedSegment[];
@@ -92,12 +101,12 @@ const TEAMS_HOST = /(^|\.)(teams\.microsoft\.com|teams\.cloud\.microsoft|cloud\.
  * cause is that the extension was reloaded while the Teams tab stayed open, so Chrome never
  * re-injected it — inject it programmatically and retry once.
  */
-async function startInTab(tabId: number) {
+async function startInTab(tabId: number, mode: CaptureMode) {
   try {
-    return await chrome.tabs.sendMessage(tabId, { type: "CAPTURE_START" });
+    return await chrome.tabs.sendMessage(tabId, { type: "CAPTURE_START", mode });
   } catch {
     await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
-    return chrome.tabs.sendMessage(tabId, { type: "CAPTURE_START" });
+    return chrome.tabs.sendMessage(tabId, { type: "CAPTURE_START", mode });
   }
 }
 
@@ -135,23 +144,66 @@ async function registerMeeting(
   }
 }
 
-async function startCapture(consentTier: ConsentTier): Promise<{
+type StartCaptureOpts = { tabId?: number; mode?: CaptureMode; autoStarted?: boolean };
+
+async function startCapture(
+  consentTier: ConsentTier,
+  opts: StartCaptureOpts = {},
+): Promise<{
   captionsDetected: boolean;
   meetingId?: string;
   startedAt: string;
 }> {
   if (await readState()) throw new Error("Capture already in progress");
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) throw new Error("No active tab");
-  const host = tab.url ? new URL(tab.url).hostname : "";
-  if (!TEAMS_HOST.test(host)) {
-    throw new Error("Open your Teams meeting in the active tab first");
+  const mode = opts.mode ?? "audio";
+  let tabId = opts.tabId;
+  if (tabId === undefined) {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) throw new Error("No active tab");
+    const host = tab.url ? new URL(tab.url).hostname : "";
+    if (!TEAMS_HOST.test(host)) {
+      throw new Error("Open your Teams meeting in the active tab first");
+    }
+    tabId = tab.id;
   }
 
   const idToken = await getIdToken();
-  const { captionsDetected, ...meetingMeta } = await startInTab(tab.id);
+  const { captionsDetected, ...meetingMeta } = await startInTab(tabId, mode);
   const captureId = crypto.randomUUID();
   const consentGrantedAt = new Date().toISOString();
+
+  if (mode === "captions") {
+    // Audio consent recording requires the offscreen recorder, which captions
+    // mode never opens — the tier is ignored (popup copy points this out).
+    const meetingId = await registerMeeting(captureId, meetingMeta, idToken);
+    await saveCaptureMeta({ captureId, meetingId, ...meetingMeta });
+    // Captions absent → best-effort programmatic enable; capture proceeds
+    // regardless (the caption observer picks the pane up whenever it appears,
+    // and signalHealth stays watchful).
+    if (!captionsDetected) {
+      void chrome.tabs.sendMessage(tabId, { type: "ENABLE_CAPTIONS" }).catch(() => {});
+    }
+    await writeState({
+      activeTabId: tabId,
+      captureId,
+      meetingId,
+      mode,
+      ...(opts.autoStarted && { autoStarted: true }),
+      seq: 1,
+      pending: [],
+      captionPending: [],
+      lastFlushAt: Date.now(),
+      meetingMeta,
+      consentTier: 0,
+      consentGrantedAt,
+      asrMode: "captions-primary",
+    });
+    return {
+      captionsDetected: !!captionsDetected,
+      meetingId,
+      startedAt: meetingMeta.startedAt,
+    };
+  }
 
   // Gate 0: captions-primary only when the flag is on AND the caption self-test
   // passed; the offscreen watchdog re-arms if finals never actually flow.
@@ -172,7 +224,7 @@ async function startCapture(consentTier: ConsentTier): Promise<{
     ...(consentTier > 0 && { consentTier, consentGrantedAt }),
   });
 
-  const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
+  const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
   await ensureOffscreen();
   const started = await sendToOffscreen({
     target: "offscreen",
@@ -193,9 +245,10 @@ async function startCapture(consentTier: ConsentTier): Promise<{
   }
 
   await writeState({
-    activeTabId: tab.id,
+    activeTabId: tabId,
     captureId,
     meetingId,
+    mode,
     seq: 1,
     pending: [],
     captionPending: [],
@@ -231,10 +284,22 @@ type SegmentsAppendBody = SegmentsAppendRequest & {
   signalHealth?: SignalHealth;
 };
 
-const onSegmentFinal = (segment: DiarizedSegment): Promise<void> =>
+const onSegmentFinal = (segment: DiarizedSegment, senderTabId: number | undefined): Promise<void> =>
   withStateLock(async () => {
     const state = await readState();
-    if (!state?.meetingId) return;
+    if (!state) return;
+    if (state.mode === "captions") {
+      if (senderTabId !== state.activeTabId) return;
+      // No offscreen document in captions mode, so the segment checkpoint (the
+      // only source crash recovery reads) is maintained here instead.
+      const prior = await getCheckpoint(state.captureId).catch(() => undefined);
+      await saveCheckpoint({
+        captureId: state.captureId,
+        segments: [...(prior?.segments ?? []), segment],
+        updatedAt: Date.now(),
+      }).catch(() => {});
+    }
+    if (!state.meetingId) return;
     state.pending.push(segment);
     const due =
       state.pending.length >= FLUSH_MAX_SEGMENTS || Date.now() - state.lastFlushAt >= FLUSH_MAX_MS;
@@ -272,8 +337,9 @@ const onCaptionCheckpoint = (
   withStateLock(async () => {
     const state = await readState();
     if (!state || senderTabId !== state.activeTabId) return;
-    // Finalized captions are the Gate 0 watchdog's liveness signal.
-    if (events.length > 0) {
+    // Finalized captions are the Gate 0 watchdog's liveness signal — audio mode
+    // only (captions mode runs no offscreen document, hence no watchdog).
+    if (events.length > 0 && state.mode !== "captions") {
       void chrome.runtime
         .sendMessage({ target: "offscreen", type: "CAPTION_HEARTBEAT" })
         .catch(() => {});
@@ -413,13 +479,18 @@ async function stopCapture(): Promise<{
   const content = await chrome.tabs
     .sendMessage(state.activeTabId, { type: "CAPTURE_STOP" })
     .catch(() => null);
-  const offscreen = await chrome.runtime
-    .sendMessage({ target: "offscreen", type: "STOP" })
-    .catch(() => null);
-  await chrome.offscreen.closeDocument().catch(() => {});
+  // Captions mode never opened an offscreen document — don't message or close one.
+  const offscreen =
+    state.mode === "captions"
+      ? null
+      : await chrome.runtime.sendMessage({ target: "offscreen", type: "STOP" }).catch(() => null);
+  if (state.mode !== "captions") await chrome.offscreen.closeDocument().catch(() => {});
 
-  // Offscreen crash → fall back to the checkpoint it wrote to IndexedDB during capture.
+  // Captions mode: the content script accumulated the caption-synthesized segments.
+  // Audio mode: offscreen crash → fall back to the checkpoint it wrote to IndexedDB
+  // during capture (also the captions-mode fallback when the tab died).
   const segments: DiarizedSegment[] =
+    content?.segments ??
     offscreen?.segments ??
     (await getCheckpoint(state.captureId).catch(() => undefined))?.segments ??
     [];
@@ -481,8 +552,10 @@ async function cancelCapture(): Promise<void> {
     await chrome.storage.session.remove("capture");
     return s;
   });
-  await chrome.runtime.sendMessage({ target: "offscreen", type: "STOP" }).catch(() => {});
-  await chrome.offscreen.closeDocument().catch(() => {});
+  if (state?.mode !== "captions") {
+    await chrome.runtime.sendMessage({ target: "offscreen", type: "STOP" }).catch(() => {});
+    await chrome.offscreen.closeDocument().catch(() => {});
+  }
   if (state) {
     await clearCapture(state.captureId).catch(() => {});
     await purgeAudio(state.captureId).catch(() => {});
@@ -553,6 +626,50 @@ async function recoverOrphans(): Promise<void> {
   }
 }
 
+// --- Auto capture (meeting presence detected by the content script) ----------
+//
+// Auto-start is captions-mode only: zero cost, zero interaction, no offscreen
+// document. The manual popup Start keeps the full audio/Transcribe path.
+
+// Serializes concurrent MEETING_DETECTED events (readState alone is check-then-act).
+let autoStarting = false;
+
+async function onMeetingDetected(tabId: number | undefined): Promise<void> {
+  if (tabId === undefined || autoStarting) return;
+  // Claim the flag before the first await, or two near-simultaneous detections
+  // both pass the checks and register two meetings.
+  autoStarting = true;
+  try {
+    const { autoCapture } = await chrome.storage.local.get("autoCapture");
+    if (autoCapture === false) return;
+    // A single capture runs at a time; this also debounces re-detection of the
+    // same meeting — the presence observer only re-fires after a debounced leave.
+    if (await readState()) return;
+    const idToken = await getIdToken().catch(() => null);
+    if (!idToken) {
+      chrome.notifications.create(`signin-${tabId}`, {
+        type: "basic",
+        iconUrl: chrome.runtime.getURL("icon-128.png"),
+        title: chrome.runtime.getManifest().name,
+        message: "Reunión detectada — iniciá sesión en la extensión para capturarla",
+      });
+      return;
+    }
+    // Detection is best-effort; a failed start leaves manual capture available.
+    await startCapture(0, { tabId, mode: "captions", autoStarted: true }).catch(() => {});
+  } finally {
+    autoStarting = false;
+  }
+}
+
+async function onMeetingEnded(tabId: number | undefined): Promise<void> {
+  const state = await readState();
+  // Presence loss only ends captures this worker auto-started, and only for the
+  // meeting's own tab — a manually started capture keeps its manual stop.
+  if (!state?.autoStarted || state.activeTabId !== tabId) return;
+  await stopCapture().catch(() => {});
+}
+
 chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
   if (msg.type === "LIVE_LINE") {
     readState().then((s) => {
@@ -561,7 +678,15 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
     return false;
   }
   if (msg.type === "SEGMENT_FINAL") {
-    void onSegmentFinal(msg.segment);
+    void onSegmentFinal(msg.segment, _s.tab?.id);
+    return false;
+  }
+  if (msg.type === "MEETING_DETECTED") {
+    void onMeetingDetected(_s.tab?.id);
+    return false;
+  }
+  if (msg.type === "MEETING_ENDED") {
+    void onMeetingEnded(_s.tab?.id);
     return false;
   }
   if (msg.type === "CAPTION_CHECKPOINT") {
@@ -588,7 +713,11 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
     readState().then((s) =>
       sendResponse({
         capturing: !!s,
-        ...(s && { meetingId: s.meetingId, startedAt: s.meetingMeta.startedAt }),
+        ...(s && {
+          meetingId: s.meetingId,
+          startedAt: s.meetingMeta.startedAt,
+          mode: s.mode ?? "audio",
+        }),
       }),
     );
     return true;
