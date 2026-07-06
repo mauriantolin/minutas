@@ -9,7 +9,8 @@
     "https://*.teams.microsoft.com/*",
     "https://teams.cloud.microsoft/*",
     "https://*.cloud.microsoft/*",
-    "https://teams.live.com/*"
+    "https://teams.live.com/*",
+    "https://cognito-idp.us-east-1.amazonaws.com/*"
   ],
   "background": { "service_worker": "background.js", "type": "module" },
   "action": { "default_popup": "popup.html", "default_title": "Teams Assistant" },

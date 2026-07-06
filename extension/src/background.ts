@@ -90,10 +90,71 @@ async function ensureOffscreen() {
   }
 }
 
+// idTokens are refreshed a minute before expiry so an in-flight request never
+// races the 60-min boundary.
+const TOKEN_SKEW_MS = 60_000;
+
+function jwtExpMs(jwt: string): number {
+  try {
+    return (JSON.parse(atob(jwt.split(".")[1]!)) as { exp: number }).exp * 1000;
+  } catch {
+    return 0;
+  }
+}
+
+const tokenUsable = (jwt: unknown): jwt is string =>
+  typeof jwt === "string" && jwtExpMs(jwt) - TOKEN_SKEW_MS > Date.now();
+
+// Cognito InitiateAuth over REST — the service worker has no `window`, so the
+// amazon-cognito-identity-js SDK (localStorage-backed) can't run here. The app
+// client is a public SPA client (no secret), so REFRESH_TOKEN_AUTH is a plain fetch.
+async function refreshIdTokenViaRest(refreshToken: string): Promise<string | null> {
+  const res = await fetch(`https://cognito-idp.${CONFIG.region}.amazonaws.com/`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-amz-json-1.1",
+      "x-amz-target": "AWSCognitoIdentityProviderService.InitiateAuth",
+    },
+    body: JSON.stringify({
+      AuthFlow: "REFRESH_TOKEN_AUTH",
+      ClientId: CONFIG.userPoolClientId,
+      AuthParameters: { REFRESH_TOKEN: refreshToken },
+    }),
+  }).catch(() => null);
+  if (!res?.ok) return null;
+  const data = (await res.json().catch(() => null)) as
+    | { AuthenticationResult?: { IdToken?: string } }
+    | null;
+  return data?.AuthenticationResult?.IdToken ?? null;
+}
+
+/**
+ * A usable idToken for API calls. The popup seeds session storage; auto-capture
+ * also runs after a service-worker/browser restart, so this falls back to the
+ * persisted token in local storage and refreshes it (via the persisted refresh
+ * token) when expired — no popup interaction required.
+ */
 async function getIdToken(): Promise<string> {
   const { idToken } = await chrome.storage.session.get("idToken");
-  if (!idToken) throw new Error("Not signed in");
-  return idToken as string;
+  if (tokenUsable(idToken)) return idToken;
+
+  const { authIdToken, authRefreshToken } = await chrome.storage.local.get([
+    "authIdToken",
+    "authRefreshToken",
+  ]);
+  if (tokenUsable(authIdToken)) {
+    await chrome.storage.session.set({ idToken: authIdToken });
+    return authIdToken;
+  }
+  if (typeof authRefreshToken === "string") {
+    const fresh = await refreshIdTokenViaRest(authRefreshToken);
+    if (fresh) {
+      await chrome.storage.session.set({ idToken: fresh });
+      await chrome.storage.local.set({ authIdToken: fresh });
+      return fresh;
+    }
+  }
+  throw new Error("Not signed in");
 }
 
 const TEAMS_HOST = /(^|\.)(teams\.microsoft\.com|teams\.cloud\.microsoft|cloud\.microsoft|teams\.live\.com)$/;
@@ -659,6 +720,10 @@ async function onMeetingDetected(tabId: number | undefined): Promise<void> {
     }
     // Detection is best-effort; a failed start leaves manual capture available.
     await startCapture(0, { tabId, mode: "captions", autoStarted: true }).catch(() => {});
+    // Surface the panel. The in-meeting widget (content overlay) always appears;
+    // openPopup additionally pops the toolbar panel when Chrome allows it (it
+    // refuses without a user gesture on some builds — hence best-effort).
+    void chrome.action.openPopup?.()?.catch(() => {});
   } finally {
     autoStarting = false;
   }
@@ -697,6 +762,7 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
   }
   if (msg.type === "ID_TOKEN_REFRESHED") {
     void chrome.storage.session.set({ idToken: msg.idToken });
+    void chrome.storage.local.set({ authIdToken: msg.idToken });
     return false;
   }
   if (msg.type === "ASR_REARMED") {

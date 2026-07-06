@@ -1,5 +1,16 @@
 import { CognitoUserPool } from "amazon-cognito-identity-js";
-import { signIn, currentIdToken } from "./auth.js";
+import { signIn, currentSession, type AuthTokens } from "./auth.js";
+
+// Persist both tokens so the service worker can capture auto-detected meetings
+// without the popup being open — including after a browser restart, when it
+// refreshes the idToken from the refresh token on its own (see background.ts).
+async function persistAuth(tokens: AuthTokens) {
+  await chrome.storage.session.set({ idToken: tokens.idToken });
+  await chrome.storage.local.set({
+    authIdToken: tokens.idToken,
+    authRefreshToken: tokens.refreshToken,
+  });
+}
 import { CONFIG } from "./config.js";
 
 /** White-label product name — single popup-side definition (spec §0). */
@@ -150,10 +161,10 @@ async function init() {
   document.title = APP_NAME;
   ($("open-dashboard") as HTMLAnchorElement).href = CONFIG.dashboardUrl;
   setDot("off");
-  const token = await currentIdToken();
-  if (token) {
-    await chrome.storage.session.set({ idToken: token });
-    await enterCaptureView(token);
+  const tokens = await currentSession();
+  if (tokens) {
+    await persistAuth(tokens);
+    await enterCaptureView(tokens.idToken);
   }
 }
 
@@ -173,10 +184,10 @@ $("signin").addEventListener("click", async () => {
   try {
     const email = ($("email") as HTMLInputElement).value;
     const password = ($("password") as HTMLInputElement).value;
-    const idToken = await signIn(email, password);
-    await chrome.storage.session.set({ idToken });
+    const tokens = await signIn(email, password);
+    await persistAuth(tokens);
     status("");
-    await enterCaptureView(idToken);
+    await enterCaptureView(tokens.idToken);
   } catch (e) {
     status(`Error: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -189,6 +200,7 @@ $("signout").addEventListener("click", async () => {
     .getCurrentUser()
     ?.signOut();
   await chrome.storage.session.remove("idToken");
+  await chrome.storage.local.remove(["authIdToken", "authRefreshToken"]);
   signedIn = false;
   show("account", false);
   show("capture", false);

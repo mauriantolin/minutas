@@ -74,9 +74,9 @@ const SELECTORS = {
   captionsToggle: ["#closed-captions-button"],
 };
 
-// Partials mutate in place for a while; an utterance is considered final once no
-// mutation touched its node for this long (or a newer caption node started mutating).
-const CAPTION_STABLE_MS = 2500;
+// A caption line superseded by a newer one gets this grace to absorb its last
+// in-place refinement before we emit its verbatim text; prune/stop are immediate.
+const CAPTION_SETTLE_MS = 1200;
 
 /** document + same-origin iframes (older v2 builds embedded the call in an iframe). */
 function roots(): Document[] {
@@ -210,17 +210,23 @@ export function captionsPresent(): boolean {
   return false;
 }
 
-type Utterance = { t: number; speakerName: string; text: string };
+type Entry = { t: number; author: string; text: string };
 
 /**
- * Watches the caption pane and emits one final CaptionEvent per utterance.
+ * Mirrors the Teams live-captions pane VERBATIM: one CaptionEvent per utterance,
+ * carrying the caption element's own `textContent` exactly as Teams rendered it.
+ *
+ * Teams refines each utterance's text in place — the ASR rewrites words, it does
+ * not merely append — and starts a NEW element for the next utterance, which
+ * virtualization later prunes. So an element's text is final once a newer caption
+ * supersedes it or Teams removes it; we emit its full text at that moment and never
+ * reconstruct it. (The previous delta-splicing over an in-place-rewritten caption
+ * is exactly what made the saved transcript diverge from what Teams displayed.)
  *
  * - `now()` supplies seconds-from-capture-start (same clock as the ASR segments).
- * - `onFinal` fires once per utterance, with `t` = when the utterance first appeared.
- * - `onHeartbeat` fires on every caption mutation (partial or final) — the liveness
- *   signal behind `captionHeartbeatLastT`.
- * - `onPartial` (optional) fires with the current in-progress utterance text on every
- *   mutation — feeds the live widget in captions-primary mode.
+ * - `onFinal` fires once per utterance with the verbatim final text.
+ * - `onHeartbeat` fires on every caption mutation — the liveness signal.
+ * - `onPartial` (optional) fires with the current in-progress text — live widget.
  *
  * Observes document.body so captions enabled mid-meeting (or a re-created pane) are
  * picked up without re-arming; per-record filtering keeps the hot path cheap.
@@ -233,46 +239,58 @@ export function observeCaptions(
 ): () => void {
   const itemSel = SELECTORS.captionItem.join(",");
   const paneSel = SELECTORS.captionPane.join(",");
-  const tracked = new Map<Element, Utterance>();
-  // Last finalized text per node: a node mutating again after the stability
-  // window re-enters tracking, and re-emitting its full text would duplicate
-  // caption content — emit only the appended delta.
-  const finalized = new WeakMap<Element, string>();
-  let activeItem: Element | null = null;
-  let stabilityTimer: number | undefined;
+  const tracked = new Map<Element, Entry>();
+  const superseded = new Set<Element>();
+  let settleTimer: number | undefined;
 
-  const finalize = (item: Element) => {
-    const u = tracked.get(item);
+  const emit = (item: Element) => {
+    const e = tracked.get(item);
     tracked.delete(item);
-    if (item === activeItem) activeItem = null;
-    if (!u) return;
-    const prevText = finalized.get(item);
-    finalized.set(item, u.text);
-    if (prevText !== undefined && u.text.startsWith(prevText)) {
-      const delta = u.text.slice(prevText.length).trim();
-      if (delta) onFinal({ t: u.t, speakerName: u.speakerName, text: delta, final: true });
-      return;
+    superseded.delete(item);
+    if (e && e.text && e.author) {
+      onFinal({ t: e.t, speakerName: e.author, text: e.text, final: true });
     }
-    onFinal({ ...u, final: true });
+  };
+
+  const scheduleSettle = () => {
+    clearTimeout(settleTimer);
+    settleTimer = window.setTimeout(() => {
+      for (const it of [...superseded]) emit(it);
+    }, CAPTION_SETTLE_MS);
+  };
+
+  const readText = (item: Element) =>
+    firstMatch(item, SELECTORS.captionText)?.textContent?.trim() ?? "";
+  const readAuthor = (item: Element) => {
+    const a = firstMatch(item, SELECTORS.captionAuthor)?.textContent;
+    return a ? cleanName(a) : "";
   };
 
   const touch = (item: Element) => {
-    const text = firstMatch(item, SELECTORS.captionText)?.textContent?.trim();
+    const text = readText(item);
     if (!text) return;
     onHeartbeat();
+    const isNew = !tracked.has(item);
     const prev = tracked.get(item);
-    const author = firstMatch(item, SELECTORS.captionAuthor)?.textContent;
-    const speakerName = (author && cleanName(author)) || prev?.speakerName;
     // No author node ever seen for this item: an unattributable final would
     // anchor downstream speaker labels to a fake name — drop it.
-    if (!speakerName) return;
-    const utterance = { t: prev?.t ?? now(), speakerName, text };
-    tracked.set(item, utterance);
-    onPartial?.({ ...utterance, final: false });
-    if (activeItem && activeItem !== item) finalize(activeItem);
-    activeItem = item;
-    clearTimeout(stabilityTimer);
-    stabilityTimer = window.setTimeout(() => finalize(item), CAPTION_STABLE_MS);
+    const author = readAuthor(item) || prev?.author || "";
+    if (!author) return;
+    if (prev && author !== prev.author) {
+      // Same DOM node recycled for a different speaker: the previous utterance is
+      // finished — emit it verbatim before overwriting with the new one.
+      onFinal({ t: prev.t, speakerName: prev.author, text: prev.text, final: true });
+      superseded.delete(item);
+      tracked.set(item, { t: now(), author, text });
+    } else {
+      tracked.set(item, { t: prev?.t ?? now(), author, text });
+    }
+    onPartial?.({ t: tracked.get(item)!.t, speakerName: author, text, final: false });
+    if (isNew) {
+      // A new utterance element appeared → every older tracked line is done.
+      for (const it of tracked.keys()) if (it !== item) superseded.add(it);
+      if (superseded.size) scheduleSettle();
+    }
   };
 
   // The pane selector guard keeps chat messages (same fui-* classes) out.
@@ -301,17 +319,17 @@ export function observeCaptions(
         }
       }
     }
-    // Teams prunes old caption nodes; a pruned utterance is final by definition.
+    // Teams prunes old caption nodes; a pruned line is final by definition.
     for (const el of [...tracked.keys()]) {
-      if (!el.isConnected) finalize(el);
+      if (!el.isConnected) emit(el);
     }
   });
   observer.observe(document.body, { subtree: true, childList: true, characterData: true });
 
   return () => {
     observer.disconnect();
-    clearTimeout(stabilityTimer);
-    for (const el of [...tracked.keys()]) finalize(el);
+    clearTimeout(settleTimer);
+    for (const el of [...tracked.keys()]) emit(el);
   };
 }
 
@@ -374,12 +392,7 @@ function clickFirst(selectors: string[]): boolean {
   return false;
 }
 
-/**
- * Best-effort programmatic captions enable via the in-call menu:
- * More → Language and speech → Turn on live captions. Verified with
- * captionsPresent() afterwards; the menu is closed (Escape) regardless.
- */
-export async function enableCaptions(): Promise<boolean> {
+async function tryEnableCaptionsOnce(): Promise<boolean> {
   try {
     if (!clickFirst(SELECTORS.moreButton)) return false;
     await sleep(600);
@@ -395,4 +408,19 @@ export async function enableCaptions(): Promise<boolean> {
       );
     }
   }
+}
+
+/**
+ * Best-effort programmatic captions enable via the in-call menu:
+ * More → Language and speech → Turn on live captions. Retried a few times because
+ * the call toolbar/menu mounts a beat after join; the menu is closed (Escape) each
+ * attempt. Verified with captionsPresent().
+ */
+export async function enableCaptions(): Promise<boolean> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (captionsPresent()) return true;
+    if (await tryEnableCaptionsOnce()) return true;
+    await sleep(1500);
+  }
+  return captionsPresent();
 }

@@ -13,23 +13,40 @@ const pool = new CognitoUserPool({
   ClientId: CONFIG.userPoolClientId,
 });
 
-export function signIn(email: string, password: string): Promise<string> {
+export interface AuthTokens {
+  idToken: string;
+  /** Long-lived; lets the service worker refresh idTokens on its own (auto-capture). */
+  refreshToken: string;
+}
+
+export function signIn(email: string, password: string): Promise<AuthTokens> {
   const user = new CognitoUser({ Username: email, Pool: pool });
   const details = new AuthenticationDetails({ Username: email, Password: password });
   return new Promise((resolve, reject) => {
     user.authenticateUser(details, {
-      onSuccess: (session) => resolve(session.getIdToken().getJwtToken()),
+      onSuccess: (session) =>
+        resolve({
+          idToken: session.getIdToken().getJwtToken(),
+          refreshToken: session.getRefreshToken().getToken(),
+        }),
       onFailure: reject,
     });
   });
 }
 
-export function currentIdToken(): Promise<string | null> {
+export function currentSession(): Promise<AuthTokens | null> {
   const user = pool.getCurrentUser();
   if (!user) return Promise.resolve(null);
   return new Promise((resolve) => {
-    user.getSession((err: unknown, session: { getIdToken(): { getJwtToken(): string } } | null) => {
-      resolve(err || !session ? null : session.getIdToken().getJwtToken());
+    user.getSession((err: unknown, session: CognitoUserSession | null) => {
+      resolve(
+        err || !session
+          ? null
+          : {
+              idToken: session.getIdToken().getJwtToken(),
+              refreshToken: session.getRefreshToken().getToken(),
+            },
+      );
     });
   });
 }
