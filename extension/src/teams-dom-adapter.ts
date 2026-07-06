@@ -318,21 +318,20 @@ export function observeCaptions(
 
   const observer = new MutationObserver((records) => {
     for (const rec of records) {
-      const item = itemOf(rec.target);
-      if (item) touch(item);
+      // In-place text refinement of an existing caption line.
+      const target = itemOf(rec.target);
+      if (target) touch(target);
+      // Teams virtualizes the caption list: a new utterance may arrive as the item
+      // itself, or wrapped in a row/pane container that CONTAINS it — scan the added
+      // subtree for items either way, or the row would be missed until its next
+      // mutation.
       for (const added of rec.addedNodes) {
-        const it = itemOf(added);
-        if (it) {
-          if (it !== item) touch(it);
-        } else if (added instanceof Element) {
-          // Pane just rendered (captions enabled mid-meeting): seed from the utterances
-          // it came with — this is the pane's initial content, not a re-scan. The added
-          // node may BE the pane, not just contain it.
-          const pane = added.matches(paneSel)
-            ? added
-            : added.querySelector(paneSel);
-          pane?.querySelectorAll(itemSel).forEach((el) => touch(el));
-        }
+        if (!(added instanceof Element)) continue;
+        const self = added.closest(itemSel);
+        if (self && self !== target && self.closest(paneSel)) touch(self);
+        added.querySelectorAll(itemSel).forEach((el) => {
+          if (el !== target && el.closest(paneSel)) touch(el);
+        });
       }
     }
     // Teams prunes old caption nodes; a pruned line is final by definition.
