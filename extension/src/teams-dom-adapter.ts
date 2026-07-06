@@ -235,13 +235,27 @@ export function observeCaptions(
   now: () => number,
   onFinal: (e: CaptionEvent) => void,
   onHeartbeat: () => void,
-  onPartial?: (e: CaptionEvent) => void,
+  onPartial?: (e: CaptionEvent, lineId: number) => void,
 ): () => void {
   const itemSel = SELECTORS.captionItem.join(",");
   const paneSel = SELECTORS.captionPane.join(",");
   const tracked = new Map<Element, Entry>();
   const superseded = new Set<Element>();
   let settleTimer: number | undefined;
+
+  // Stable per-utterance id so the live widget can mirror each Teams caption line
+  // and refine it IN PLACE (Teams rewrites a line's text as the ASR corrects it),
+  // instead of accumulating divergent copies. A recycled node gets a fresh id.
+  const ids = new WeakMap<Element, number>();
+  let nextId = 1;
+  const idOf = (item: Element): number => {
+    let id = ids.get(item);
+    if (id === undefined) {
+      id = nextId++;
+      ids.set(item, id);
+    }
+    return id;
+  };
 
   const emit = (item: Element) => {
     const e = tracked.get(item);
@@ -278,14 +292,16 @@ export function observeCaptions(
     if (!author) return;
     if (prev && author !== prev.author) {
       // Same DOM node recycled for a different speaker: the previous utterance is
-      // finished — emit it verbatim before overwriting with the new one.
+      // finished — emit it verbatim before overwriting with the new one, and give
+      // the node a fresh id so the widget shows it as a new line.
       onFinal({ t: prev.t, speakerName: prev.author, text: prev.text, final: true });
       superseded.delete(item);
+      ids.set(item, nextId++);
       tracked.set(item, { t: now(), author, text });
     } else {
       tracked.set(item, { t: prev?.t ?? now(), author, text });
     }
-    onPartial?.({ t: tracked.get(item)!.t, speakerName: author, text, final: false });
+    onPartial?.({ t: tracked.get(item)!.t, speakerName: author, text, final: false }, idOf(item));
     if (isNew) {
       // A new utterance element appeared → every older tracked line is done.
       for (const it of tracked.keys()) if (it !== item) superseded.add(it);

@@ -14,6 +14,8 @@ export interface WidgetOptions {
 
 export interface LiveWidget {
   renderLine(label: string, text: string, isPartial: boolean): void;
+  /** Captions mode: mirror one Teams caption line, keyed by id, refined in place. */
+  upsertCaption(id: number, label: string, text: string): void;
   updateHealth(health: SignalHealth): void;
   destroy(): void;
 }
@@ -236,6 +238,9 @@ export function mountWidget(opts: WidgetOptions): LiveWidget {
 
   const finals: { label: string; text: string; color: string }[] = [];
   let interim: { label: string; text: string } | null = null;
+  // Captions mode: a live mirror of the Teams caption pane, keyed by utterance id
+  // (insertion order = Teams order), each line refined in place.
+  const captionLines = new Map<number, { label: string; text: string; color: string }>();
   let paused = false;
   let quiet = false;
   const speakerColor = new Map<string, string>();
@@ -264,10 +269,16 @@ export function mountWidget(opts: WidgetOptions): LiveWidget {
   function render() {
     if (paused) return;
     linesEl.textContent = "";
-    for (const line of finals.slice(-MAX_VISIBLE_LINES)) {
-      linesEl.appendChild(lineDiv(line.label, line.text, line.color));
+    if (captionLines.size) {
+      for (const line of [...captionLines.values()].slice(-MAX_VISIBLE_LINES)) {
+        linesEl.appendChild(lineDiv(line.label, line.text, line.color));
+      }
+    } else {
+      for (const line of finals.slice(-MAX_VISIBLE_LINES)) {
+        linesEl.appendChild(lineDiv(line.label, line.text, line.color));
+      }
+      if (interim) linesEl.appendChild(lineDiv(interim.label, interim.text));
     }
-    if (interim) linesEl.appendChild(lineDiv(interim.label, interim.text));
     linesEl.scrollTop = linesEl.scrollHeight;
   }
 
@@ -357,6 +368,15 @@ export function mountWidget(opts: WidgetOptions): LiveWidget {
       } else {
         finals.push({ label, text, color: colorFor(label) });
         interim = null;
+      }
+      render();
+    },
+    upsertCaption(id, label, text) {
+      const prev = captionLines.get(id);
+      captionLines.set(id, { label, text, color: prev?.color ?? colorFor(label) });
+      // Bound memory; the render slice already caps what's visible.
+      while (captionLines.size > MAX_VISIBLE_LINES * 4) {
+        captionLines.delete(captionLines.keys().next().value!);
       }
       render();
     },

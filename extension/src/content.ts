@@ -131,9 +131,10 @@ function shipCaptionSegment(e: CaptionEvent, endTime: number) {
 function onCaptionFinal(e: CaptionEvent) {
   captionTimeline.push(e);
   if (captureMode !== "captions") return;
+  // The widget already mirrors this line via onCaptionUpdate (keyed, in place); a
+  // renderLine here would push a divergent duplicate. Only ship the backend segment.
   if (pendingCaption) shipCaptionSegment(pendingCaption, e.t);
   pendingCaption = e;
-  widget?.renderLine(e.speakerName, e.text, false);
 }
 
 function flushPendingCaptionSegment() {
@@ -175,8 +176,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         domReadCount += 1;
         healthDirty = true;
       },
-      (e) => {
-        if (captureMode === "captions") widget?.renderLine(e.speakerName, e.text, true);
+      (e, lineId) => {
+        if (captureMode === "captions") widget?.upsertCaption(lineId, e.speakerName, e.text);
       },
     );
     captionFlushTimer = window.setInterval(flushCaptions, CAPTION_FLUSH_MS);
