@@ -10,23 +10,35 @@ interface AuthContextValue {
   ready: boolean;
   /** Email claim decoded from the id token; null when signed out. */
   email: string | null;
+  /** True when the id token's `cognito:groups` includes "admin". */
+  isAdmin: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-function emailFromToken(token: string | null): string | null {
+function decodeClaims(token: string | null): Record<string, unknown> | null {
   if (!token) return null;
   try {
     // JWT payloads are base64url — map to base64 (and pad) before atob.
     const b64 = (token.split(".")[1] ?? "").replace(/-/g, "+").replace(/_/g, "/");
     const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-    const payload = JSON.parse(atob(padded)) as { email?: string };
-    return payload.email ?? null;
+    return JSON.parse(atob(padded)) as Record<string, unknown>;
   } catch {
     return null;
   }
+}
+
+function emailFromToken(token: string | null): string | null {
+  return (decodeClaims(token)?.email as string | undefined) ?? null;
+}
+
+function isAdminFromToken(token: string | null): boolean {
+  const groups = decodeClaims(token)?.["cognito:groups"];
+  if (Array.isArray(groups)) return groups.includes("admin");
+  if (typeof groups === "string") return groups.split(/[\s,]+/).includes("admin");
+  return false;
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -50,7 +62,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ token, ready, email: emailFromToken(token), signIn, signOut }),
+    () => ({
+      token,
+      ready,
+      email: emailFromToken(token),
+      isAdmin: isAdminFromToken(token),
+      signIn,
+      signOut,
+    }),
     [token, ready, signIn, signOut],
   );
 

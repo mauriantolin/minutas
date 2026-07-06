@@ -801,6 +801,32 @@ export class TeamsAgentCoreStack extends Stack {
     transcripts.grantRead(meetingsDelete);
     transcripts.grantDelete(meetingsDelete);
 
+    // Admin API: Cognito user management, gated to the "admin" group in-handler.
+    const adminFn = new NodejsFunction(this, "AdminFn", {
+      entry: path.join(BACKEND_SRC, "handlers", "admin.ts"),
+      runtime: Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      memorySize: 256,
+      environment: { USER_POOL_ID: userPool.userPoolId },
+      bundling,
+    });
+    adminFn.addToRolePolicy(
+      new PolicyStatement({
+        actions: [
+          "cognito-idp:ListUsers",
+          "cognito-idp:AdminCreateUser",
+          "cognito-idp:AdminSetUserPassword",
+          "cognito-idp:AdminDeleteUser",
+          "cognito-idp:AdminAddUserToGroup",
+          "cognito-idp:AdminRemoveUserFromGroup",
+          "cognito-idp:AdminListGroupsForUser",
+          "cognito-idp:AdminGetUser",
+          "cognito-idp:AdminUpdateUserAttributes",
+        ],
+        resources: [userPool.userPoolArn],
+      }),
+    );
+
     const authorizer = new HttpJwtAuthorizer(
       "JwtAuthorizer",
       `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}`,
@@ -863,6 +889,35 @@ export class TeamsAgentCoreStack extends Stack {
       authorizer,
     });
 
+    const adminIntegration = new HttpLambdaIntegration(
+      "AdminIntegration",
+      adminFn,
+    );
+    api.addRoutes({
+      path: "/admin/users",
+      methods: [HttpMethod.GET, HttpMethod.POST],
+      integration: adminIntegration,
+      authorizer,
+    });
+    api.addRoutes({
+      path: "/admin/users/{email}",
+      methods: [HttpMethod.DELETE],
+      integration: adminIntegration,
+      authorizer,
+    });
+    api.addRoutes({
+      path: "/admin/users/{email}/password",
+      methods: [HttpMethod.POST],
+      integration: adminIntegration,
+      authorizer,
+    });
+    api.addRoutes({
+      path: "/admin/users/{email}/role",
+      methods: [HttpMethod.POST],
+      integration: adminIntegration,
+      authorizer,
+    });
+
     // --- Web hosting: private S3 + CloudFront (OAC) for the Next.js dashboard ---
     const webBucket = new Bucket(this, "WebBucket", {
       blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
@@ -879,7 +934,7 @@ export class TeamsAgentCoreStack extends Stack {
       code: FunctionCode.fromInline(`
 function handler(event) {
   var request = event.request;
-  var routes = ["/login", "/meetings", "/meeting", "/live", "/kits", "/settings"];
+  var routes = ["/login", "/meetings", "/meeting", "/live", "/kits", "/settings", "/admin"];
   var uri = request.uri.endsWith("/") ? request.uri.slice(0, -1) : request.uri;
   if (routes.includes(uri)) {
     request.uri = uri + "/index.html";

@@ -12,6 +12,7 @@ import {
   Moon,
   Plus,
   Settings,
+  ShieldCheck,
   Sparkles,
   Sun,
 } from "lucide-react";
@@ -66,7 +67,7 @@ const NAV = [
 export function AppSidebar({ meetings }: { meetings: Meeting[] | null }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { email, signOut } = useAuth();
+  const { email, isAdmin, signOut } = useAuth();
   const { theme, setTheme } = useTheme();
   const [labels, setLabels] = useState<LabelDef[]>([]);
   const [labelDialogOpen, setLabelDialogOpen] = useState(false);
@@ -101,7 +102,12 @@ export function AppSidebar({ meetings }: { meetings: Meeting[] | null }) {
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
-              {NAV.map((item) => (
+              {[
+                ...NAV,
+                ...(isAdmin
+                  ? [{ title: "Administración", href: "/admin", icon: ShieldCheck }]
+                  : []),
+              ].map((item) => (
                 <SidebarMenuItem key={item.href}>
                   <SidebarMenuButton
                     asChild
