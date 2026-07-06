@@ -69,9 +69,36 @@ function flushCaptions() {
   if (events.length === 0 && !healthDirty) return;
   captionFlushMark = captionTimeline.length;
   healthDirty = false;
-  chrome.runtime
-    .sendMessage({ type: "CAPTION_CHECKPOINT", events, signalHealth: signalHealth() })
-    .catch(() => {});
+  send({ type: "CAPTION_CHECKPOINT", events, signalHealth: signalHealth() });
+}
+
+let dead = false;
+let presenceStop: (() => void) | undefined;
+
+// The content script outlives extension reloads: the old instance keeps running in
+// the Teams tab, but its chrome.runtime is invalidated, so sendMessage throws
+// synchronously ("Extension context invalidated") — a trailing .catch can't help.
+// Detect the dead context, send nothing, and tear this instance's timers/observers
+// down so it goes quiet instead of spamming the console.
+function send(msg: unknown) {
+  if (dead) return;
+  if (!chrome.runtime?.id) return teardown();
+  try {
+    void chrome.runtime.sendMessage(msg).catch(() => {});
+  } catch {
+    teardown();
+  }
+}
+
+function teardown() {
+  if (dead) return;
+  dead = true;
+  if (poll) window.clearInterval(poll);
+  if (captionFlushTimer) window.clearInterval(captionFlushTimer);
+  stopCaptions?.();
+  presenceStop?.();
+  widget?.destroy();
+  widget = null;
 }
 
 function tick() {
@@ -125,7 +152,7 @@ function shipCaptionSegment(e: CaptionEvent, endTime: number) {
     text: e.text,
   };
   captionSegments.push(segment);
-  chrome.runtime.sendMessage({ type: "SEGMENT_FINAL", segment }).catch(() => {});
+  send({ type: "SEGMENT_FINAL", segment });
 }
 
 function onCaptionFinal(e: CaptionEvent) {
@@ -228,17 +255,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 // Meeting auto-detection runs for the tab's whole lifetime: the service worker
 // decides whether a detected meeting becomes an auto capture.
-observeMeetingPresence(
+presenceStop = observeMeetingPresence(
   () => {
-    chrome.runtime
-      .sendMessage({
-        type: "MEETING_DETECTED",
-        title: readMeetingTitle(),
-        startedAt: new Date().toISOString(),
-      })
-      .catch(() => {});
+    send({
+      type: "MEETING_DETECTED",
+      title: readMeetingTitle(),
+      startedAt: new Date().toISOString(),
+    });
   },
   () => {
-    chrome.runtime.sendMessage({ type: "MEETING_ENDED" }).catch(() => {});
+    send({ type: "MEETING_ENDED" });
   },
 );
