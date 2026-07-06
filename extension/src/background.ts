@@ -82,8 +82,10 @@ async function ensureOffscreen() {
   if (!(await chrome.offscreen.hasDocument())) {
     await chrome.offscreen.createDocument({
       url: "offscreen.html",
-      reasons: ["USER_MEDIA"],
-      justification: "Capture meeting audio for transcription.",
+      // AUDIO_PLAYBACK: tabCapture mutes the tab's own output, so the offscreen
+      // document replays the captured tab audio back to the user's speakers.
+      reasons: ["USER_MEDIA", "AUDIO_PLAYBACK"],
+      justification: "Capture and monitor meeting audio for transcription.",
     });
   }
 }

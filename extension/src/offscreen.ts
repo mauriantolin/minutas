@@ -174,6 +174,17 @@ async function startSource(
   worklet.connect(sink);
   sink.connect(ctx.destination);
 
+  // tabCapture silences the tab's own playback while we consume its stream, so the
+  // user stops hearing the call. Replay the tab audio to the speakers at native
+  // fidelity through a separate context — the capture context runs at 16 kHz (and
+  // its sink is muted), which would sound muffled. The mic is never monitored: it
+  // would echo the local user straight back into their speakers.
+  let monitorCtx: AudioContext | null = null;
+  if (source === "tab") {
+    monitorCtx = new AudioContext();
+    monitorCtx.createMediaStreamSource(media).connect(monitorCtx.destination);
+  }
+
   const endInput = () => {
     ended = true;
     notify();
@@ -191,6 +202,7 @@ async function startSource(
     node.disconnect();
     worklet.disconnect();
     sink.disconnect();
+    void monitorCtx?.close();
     media.getTracks().forEach((t) => t.stop());
     void ctx.close();
   };
