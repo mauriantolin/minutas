@@ -11,6 +11,10 @@ const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 export const metadata: Metadata = {
   title: APP_NAME,
   description: "Transcripciones, resúmenes e insights de tus reuniones.",
+  icons: {
+    icon: "/minutix-mark.png",
+    apple: "/minutix-mark.png",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

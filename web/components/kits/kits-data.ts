@@ -23,7 +23,7 @@ export const BUILT_IN_KITS: Kit[] = [
     id: "general",
     emoji: "📋",
     name: "Reuniones generales",
-    description: "Resúmenes y minutas listos para compartir.",
+    description: "Resúmenes listos para compartir.",
     prompts: [
       {
         name: "Resumen corto",

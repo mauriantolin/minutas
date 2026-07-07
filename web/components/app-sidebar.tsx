@@ -94,7 +94,8 @@ export function AppSidebar({ meetings }: { meetings: Meeting[] | null }) {
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
-        <div className="flex h-8 items-center px-2 font-semibold tracking-tight group-data-[collapsible=icon]:px-0">
+        <div className="flex h-8 items-center gap-2 px-2 font-semibold tracking-tight group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
+          <img src="/minutix-mark.png" alt="" className="size-6 shrink-0" />
           <span className="group-data-[collapsible=icon]:hidden">{APP_NAME}</span>
         </div>
       </SidebarHeader>

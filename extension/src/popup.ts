@@ -14,7 +14,7 @@ async function persistAuth(tokens: AuthTokens) {
 import { CONFIG } from "./config.js";
 
 /** White-label product name — single popup-side definition (spec §0). */
-const APP_NAME = "Minutas";
+const APP_NAME = "Minutix";
 
 const $ = (id: string) => document.getElementById(id)!;
 const status = (t: string) => ($("status").textContent = t);
