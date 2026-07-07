@@ -4,6 +4,8 @@ Transcripción, resúmenes y Q&A de reuniones de Microsoft Teams, self-hosted en
 Estilo Tactiq: una extensión de Chrome captura el audio de la PWA de Teams, lo transcribe
 con Amazon Transcribe (identificando al hablante por nombre real), y un dashboard muestra
 transcripciones, resúmenes y action items generados por un agente Claude en Bedrock.
+Minutix Desktop convive como alternativa Windows para Teams Desktop: lee subtítulos en vivo
+por UI Automation y envía segmentos al mismo backend, sin grabar audio.
 
 ## Arquitectura
 
@@ -46,6 +48,7 @@ lifecycle de 7 días, KMS).
 | `backend` | Lambdas: lifecycle API, worker de pipeline (`src/handlers/pipeline.ts`, fases P2–P8), Q&A. Cliente Bedrock tiered en `src/lib/agent.ts` |
 | `infra` | CDK: Cognito, API GW, DynamoDB, S3 (KMS), CloudFront (+function de rutas), Step Function `MeetingPipeline`, EventBridge (Transcribe callback), alarms |
 | `extension` | Chrome MV3: captura + captions + VAD + checkpoints IndexedDB + audio opt-in OPFS + widget in-meeting. Build: `npm run build -w @teams-agent-core/extension` |
+| `desktop` | Minutix Desktop para Windows/Teams Desktop (WPF + UI Automation). Build: `powershell -File desktop/tools/Publish-MinutasDesktop.ps1` |
 | `web` | Dashboard Next.js static export + Tailwind v4 + shadcn/ui (rutas: `/meetings`, `/meeting?id=`, `/live?id=`, `/kits`, `/settings`) |
 
 ## Recursos desplegados (sandbox)
@@ -70,6 +73,12 @@ cd ../web && npm run build
 aws s3 sync out "s3://<WebBucketName>" --delete
 ```
 
+El deploy de GitHub Actions genera automáticamente los descargables servidos desde
+Configuración:
+
+- `web/public/minutas-extension.zip`
+- `web/public/minutix-desktop-win-x64.zip`
+
 ## Probar end-to-end — 2 prerequisitos
 
 1. **Crear un usuario de Cognito** (para login en extensión y dashboard):
@@ -87,6 +96,10 @@ Después:
 - **Extensión:** `npm run build -w @teams-agent-core/extension` → cargar `extension/dist`
   como *unpacked* en `chrome://extensions`. Abrir una reunión en la PWA de Teams, login en el
   popup, **Start**, y al terminar **Stop & summarize**.
+- **Desktop:** `powershell -NoProfile -ExecutionPolicy Bypass -File desktop/tools/Publish-MinutasDesktop.ps1`
+  → ejecutar `desktop/publish/Minutix.Desktop-win-x64/Minutix.Desktop.exe`. Abrir Teams
+  Desktop con subtítulos en vivo, login en la app, **Empezar a transcribir**, y al terminar
+  **Detener y resumir**.
 - **Dashboard:** entrar a la URL de CloudFront, login, ver la reunión con transcripción +
   resumen + Q&A.
 

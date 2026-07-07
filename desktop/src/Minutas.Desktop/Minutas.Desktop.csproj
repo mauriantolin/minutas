@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\minutix-mark.ico</ApplicationIcon>
+    <AssemblyName>Minutix.Desktop</AssemblyName>
+    <RootNamespace>Minutas.Desktop</RootNamespace>
+    <Product>Minutix Desktop</Product>
+    <Description>Minutix Teams Desktop companion</Description>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin\**;obj\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="UI\MainForm.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="Assets\minutix-logo-cropped.png" />
+    <None Remove="Assets\minutix-mark.png" />
+    <Resource Include="Assets\minutix-logo-cropped.png" />
+    <Resource Include="Assets\minutix-mark.png" />
+  </ItemGroup>
+
+</Project>

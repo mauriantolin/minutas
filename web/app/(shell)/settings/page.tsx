@@ -274,6 +274,24 @@ export default function SettingsPage() {
 
         <Card>
           <CardHeader>
+            <CardTitle className="text-sm font-medium">Aplicación Windows</CardTitle>
+            <CardDescription>
+              Descargá Minutix Desktop para capturar subtítulos en vivo desde Teams Desktop.
+              Funciona con la ventana minimizada y no graba audio.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button asChild>
+              <a href="/minutix-desktop-win-x64.zip" download>
+                <Download />
+                Descargar app Windows
+              </a>
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
             <CardTitle className="text-sm font-medium">Apariencia</CardTitle>
           </CardHeader>
           <CardContent className="flex items-center justify-between gap-4">

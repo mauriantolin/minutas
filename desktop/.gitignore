@@ -1,0 +1,29 @@
+# Build outputs
+bin/
+obj/
+publish/
+
+# Superseded WinForms prototype
+src/Minutas.Desktop/UI/MainForm.cs
+
+# Local capture/debug output
+teams-captions*.txt
+teams-captions*.jsonl
+teams-uia-*.jsonl
+*-uia-dump.jsonl
+src/Minutas.Desktop/Assets/minutix-logo-source.png
+src/Minutas.Desktop/Assets/minutix-logo.png
+src/Minutas.Desktop/Assets/minutix.ico
+
+# User/local app data
+captures/
+
+# IDE/local files
+.vs/
+.vscode/
+*.user
+*.suo
+
+# OS noise
+Thumbs.db
+Desktop.ini
