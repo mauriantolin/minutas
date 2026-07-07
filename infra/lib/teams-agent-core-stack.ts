@@ -969,6 +969,9 @@ function handler(event) {
     new CfnOutput(this, "IdentityPoolId", { value: identityPool.ref });
     new CfnOutput(this, "ApiUrl", { value: api.apiEndpoint });
     new CfnOutput(this, "WebBucketName", { value: webBucket.bucketName });
+    new CfnOutput(this, "WebDistributionId", {
+      value: distribution.distributionId,
+    });
     new CfnOutput(this, "WebUrl", {
       value: `https://${distribution.distributionDomainName}`,
     });
