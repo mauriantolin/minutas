@@ -264,7 +264,7 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent>
             <Button asChild>
-              <a href="/minutas-extension.zip" download>
+              <a href="/minutix-extension.zip" download>
                 <Download />
                 Descargar extensión
               </a>

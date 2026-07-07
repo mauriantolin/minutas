@@ -6,7 +6,7 @@ export const CONFIG = {
 };
 
 /** White-label product name — never hardcode a brand elsewhere (spec §0). */
-export const APP_NAME = "Minutas";
+export const APP_NAME = "Minutix";
 
 /** Spanish display labels for the coarse status machine (spec §2). */
 export const STATUS_LABELS: Record<string, string> = {

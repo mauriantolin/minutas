@@ -76,7 +76,7 @@ aws s3 sync out "s3://<WebBucketName>" --delete
 El deploy de GitHub Actions genera automáticamente los descargables servidos desde
 Configuración:
 
-- `web/public/minutas-extension.zip`
+- `web/public/minutix-extension.zip`
 - `web/public/minutix-desktop-win-x64.zip`
 
 ## Probar end-to-end — 2 prerequisitos

@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Teams Meeting Assistant",
+  "name": "Minutix",
+  "short_name": "Minutix",
   "version": "0.1.0",
-  "description": "Transcribes your Microsoft Teams meetings and syncs summaries to your workspace.",
+  "description": "Captura reuniones de Microsoft Teams y sincroniza resúmenes con tu panel Minutix.",
   "permissions": ["tabCapture", "offscreen", "storage", "scripting", "activeTab", "notifications"],
   "host_permissions": [
     "https://teams.microsoft.com/*",
@@ -12,8 +13,23 @@
     "https://teams.live.com/*",
     "https://cognito-idp.us-east-1.amazonaws.com/*"
   ],
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  },
   "background": { "service_worker": "background.js", "type": "module" },
-  "action": { "default_popup": "popup.html", "default_title": "Teams Assistant" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Minutix",
+    "default_icon": {
+      "16": "icon-16.png",
+      "32": "icon-32.png",
+      "48": "icon-48.png",
+      "128": "icon-128.png"
+    }
+  },
   "content_scripts": [
     {
       "matches": [

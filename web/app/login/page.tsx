@@ -46,7 +46,7 @@ export default function LoginPage() {
     <div className="grid min-h-svh place-items-center bg-muted/40 p-6">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <div className="text-sm font-semibold">{APP_NAME}</div>
+          <img src="/minutix-logo.png" alt={APP_NAME} className="mb-2 h-11 w-fit max-w-44" />
           <CardTitle className="text-2xl font-semibold tracking-tight">
             Iniciá sesión
           </CardTitle>

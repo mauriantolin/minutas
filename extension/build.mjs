@@ -4,7 +4,7 @@ import { zipDir } from "../scripts/zip-dir.mjs";
 
 // The dashboard's Configuración page serves this for download, so every extension
 // build refreshes it — the zip is never stale relative to the shipped code.
-const ZIP_OUT = "../web/public/minutas-extension.zip";
+const ZIP_OUT = "../web/public/minutix-extension.zip";
 
 const entries = {
   background: "src/background.ts",
