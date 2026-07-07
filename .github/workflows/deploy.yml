@@ -29,6 +29,10 @@ jobs:
           node-version: 20
           cache: npm
 
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
       - run: npm ci
 
       - name: Configure AWS credentials (OIDC)
@@ -56,11 +60,18 @@ jobs:
           echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
           echo "distribution=$DIST" >> "$GITHUB_OUTPUT"
 
-      # The extension build packages web/public/minutas-extension.zip, so it must
-      # run before the web export — otherwise the download served from
-      # Configuración would be stale (or missing, since *.zip is gitignored).
+      # The extension and desktop builds package web/public downloads, so they
+      # must run before the web export. The zips are gitignored and generated
+      # fresh for the Configuración page on every deploy.
       - name: Build extension
         run: npm run build -w @teams-agent-core/extension
+
+      - name: Build desktop app
+        shell: pwsh
+        run: |
+          ./desktop/tools/Publish-MinutasDesktop.ps1 `
+            -Runtime win-x64 `
+            -PackageOutputPath ./web/public/minutix-desktop-win-x64.zip
 
       - name: Build web (static export)
         run: npm run build -w @teams-agent-core/web
