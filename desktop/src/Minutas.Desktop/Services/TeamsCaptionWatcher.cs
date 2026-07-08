@@ -25,21 +25,23 @@ public sealed class TeamsCaptionWatcher
 
     public string? GetCurrentMeetingTitle()
     {
-        var teamsProcessIds = GetTeamsProcessIds();
+        return GetStatus().Title;
+    }
 
-        foreach (var root in GetActiveMeetingRoots(teamsProcessIds, requireCaptions: false))
-        {
-            foreach (var title in new[] { root.RootName, root.WindowName })
-            {
-                var cleanTitle = CleanMeetingTitle(title);
-                if (!string.IsNullOrWhiteSpace(cleanTitle))
-                {
-                    return cleanTitle;
-                }
-            }
-        }
+    public TeamsMeetingStatus GetStatus()
+    {
+        var roots = GetCandidateRootSnapshots(GetTeamsProcessIds()).ToArray();
+        var title = roots
+            .SelectMany(root => new[] { root.RootName, root.WindowName })
+            .Select(CleanMeetingTitle)
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
 
-        return null;
+        return new TeamsMeetingStatus(
+            MeetingActive: roots.Any(root => root.IsMeetingSurface && !root.MeetingEnded),
+            CaptionsActive: roots.Any(root => root.HasCaptions || root.CaptionsUiVisible),
+            CaptionsWindowActive: roots.Any(root => root.IsCaptionsWindow && root.HasCaptions),
+            MeetingEnded: roots.Any(root => root.MeetingEnded),
+            Title: title);
     }
 
     public async Task WatchAsync(DateTimeOffset startedAt, CancellationToken cancellationToken)
@@ -89,7 +91,7 @@ public sealed class TeamsCaptionWatcher
     private IEnumerable<CaptionObservation> ReadSnapshot(double elapsedSeconds)
     {
         var teamsProcessIds = GetTeamsProcessIds();
-        foreach (var root in GetActiveMeetingRoots(teamsProcessIds, requireCaptions: true))
+        foreach (var root in GetCaptionRoots(teamsProcessIds))
         {
             foreach (var caption in ConvertCandidatesToCaptions(GetCaptionCandidates(root.PatternText)))
             {
@@ -103,7 +105,22 @@ public sealed class TeamsCaptionWatcher
         }
     }
 
-    private IReadOnlyList<CaptionRootSnapshot> GetActiveMeetingRoots(HashSet<int> teamsProcessIds, bool requireCaptions)
+    private IReadOnlyList<CaptionRootSnapshot> GetCaptionRoots(HashSet<int> teamsProcessIds)
+    {
+        var roots = GetCandidateRootSnapshots(teamsProcessIds)
+            .Where(root => root.HasCaptions)
+            .ToArray();
+
+        if (roots.Length == 0)
+        {
+            return roots;
+        }
+
+        var bestScore = roots.Min(root => root.Score);
+        return roots.Where(root => root.Score == bestScore).ToArray();
+    }
+
+    private IReadOnlyList<CaptionRootSnapshot> GetCandidateRootSnapshots(HashSet<int> teamsProcessIds)
     {
         var roots = new List<CaptionRootSnapshot>();
 
@@ -121,28 +138,22 @@ public sealed class TeamsCaptionWatcher
 
                 var isOffscreen = Safe<bool?>(() => rootWebArea.Current.IsOffscreen, null);
                 var patternText = GetTextFromElement(rootWebArea);
-                if (!IsMeetingSurface(patternText))
+                var isCaptionsWindow = IsCaptionsWindowTitle(windowName) || IsCaptionsWindowTitle(rootName);
+                var isMeetingSurface = IsMeetingSurface(patternText);
+                var hasCaptions = IsCaptionLikeText(patternText);
+                var captionsUiVisible = ContainsCaptionChrome(patternText);
+                var meetingEnded = IsMeetingEndedText(patternText);
+
+                if (!isMeetingSurface && !(isCaptionsWindow && hasCaptions) && !meetingEnded)
                 {
                     continue;
                 }
 
-                if (requireCaptions && !IsCaptionLikeText(patternText))
-                {
-                    continue;
-                }
-
-                var score = GetCaptionRootScore(rootName, windowName, patternText, isOffscreen);
-                roots.Add(new CaptionRootSnapshot(rootWebArea, patternText, rootName, windowName, isOffscreen, score));
+                var score = GetCaptionRootScore(rootName, windowName, patternText, isOffscreen, isCaptionsWindow);
+                roots.Add(new CaptionRootSnapshot(rootWebArea, window, patternText, rootName, windowName, isOffscreen, score, isMeetingSurface, isCaptionsWindow, hasCaptions, captionsUiVisible, meetingEnded));
             }
         }
-
-        if (roots.Count == 0)
-        {
-            return roots;
-        }
-
-        var bestScore = roots.Min(root => root.Score);
-        return roots.Where(root => root.Score == bestScore).ToArray();
+        return roots;
     }
 
     private static IEnumerable<CaptionDraft> ConvertCandidatesToCaptions(IEnumerable<string> candidates)
@@ -455,6 +466,19 @@ public sealed class TeamsCaptionWatcher
             .Replace("\t", " ");
     }
 
+    private static bool IsMeetingEndedText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(
+            NormalizeText(text),
+            @"\b(Meeting ended|Call ended|Meeting has ended|The meeting has ended|You left the meeting|You've left the meeting|You have left the meeting|La reuni[oó]n termin[oó]|La llamada termin[oó]|Reuni[oó]n finalizada|Llamada finalizada|Saliste de la reuni[oó]n|Has salido de la reuni[oó]n|Te fuiste de la reuni[oó]n)\b",
+            RegexOptions.IgnoreCase);
+    }
+
     private static string GetTextFromElement(AutomationElement element)
     {
         var texts = new List<string>();
@@ -590,6 +614,11 @@ public sealed class TeamsCaptionWatcher
             return 2;
         }
 
+        if (IsCaptionsWindowTitle(name))
+        {
+            return 1;
+        }
+
         return -1;
     }
 
@@ -617,7 +646,7 @@ public sealed class TeamsCaptionWatcher
         return value;
     }
 
-    private static int GetCaptionRootScore(string rootName, string windowName, string patternText, bool? isOffscreen)
+    private static int GetCaptionRootScore(string rootName, string windowName, string patternText, bool? isOffscreen, bool isCaptionsWindow)
     {
         var score = 0;
 
@@ -629,6 +658,11 @@ public sealed class TeamsCaptionWatcher
         if (ContainsCaptionChrome(patternText))
         {
             score -= 20;
+        }
+
+        if (isCaptionsWindow)
+        {
+            score -= 15;
         }
 
         if (IsTeamsChatSurfaceTitle(rootName) || IsTeamsChatSurfaceTitle(windowName))
@@ -704,7 +738,7 @@ public sealed class TeamsCaptionWatcher
     {
         return Regex.IsMatch(
             text,
-            @"\b(Live Captions|Closed captions|Hide live captions|Caption Settings|Open captions in new window|Turn off live captions)\b",
+            @"\b(Live Captions|Closed captions|Hide live captions|Caption Settings|Open captions in new window|Turn off live captions|Show live captions|Captions will be shown|Subt[ií]tulos en vivo|Mostrar subt[ií]tulos en vivo)\b",
             RegexOptions.IgnoreCase);
     }
 
@@ -733,6 +767,17 @@ public sealed class TeamsCaptionWatcher
         return Regex.IsMatch(value, @"^Chat\s*\|", RegexOptions.IgnoreCase);
     }
 
+    private static bool IsCaptionsWindowTitle(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        var value = Regex.Replace(name.Trim(), @"^WebView2:\s*", "", RegexOptions.IgnoreCase);
+        return Regex.IsMatch(value, @"^(Captions|Subt[ií]tulos)\s*\|", RegexOptions.IgnoreCase);
+    }
+
     private static bool IsWebViewCallWindowTitle(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -759,6 +804,7 @@ public sealed class TeamsCaptionWatcher
     {
         var value = Regex.Replace(name.Trim(), @"^WebView2:\s*", "", RegexOptions.IgnoreCase);
         value = Regex.Replace(value, @"^Chat\s*\|\s*", "", RegexOptions.IgnoreCase);
+        value = Regex.Replace(value, @"^(Captions|Subt[ií]tulos)\s*\|\s*", "", RegexOptions.IgnoreCase);
         value = Regex.Replace(value, @"\s*\|\s*Microsoft Teams$", "", RegexOptions.IgnoreCase);
         return value.Trim();
     }
@@ -863,13 +909,29 @@ public sealed class TeamsCaptionWatcher
 
     private sealed record CaptionDraft(string Speaker, string Text);
 
+    public sealed record TeamsMeetingStatus(
+        bool MeetingActive,
+        bool CaptionsActive,
+        bool CaptionsWindowActive,
+        bool MeetingEnded,
+        string? Title)
+    {
+        public bool HasMeetingOrCaptions => MeetingActive || CaptionsActive || CaptionsWindowActive;
+    }
+
     private sealed record CaptionRootSnapshot(
         AutomationElement Element,
+        AutomationElement Window,
         string PatternText,
         string RootName,
         string WindowName,
         bool? IsOffscreen,
-        int Score);
+        int Score,
+        bool IsMeetingSurface,
+        bool IsCaptionsWindow,
+        bool HasCaptions,
+        bool CaptionsUiVisible,
+        bool MeetingEnded);
 
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 

@@ -157,7 +157,14 @@ public sealed partial class MainWindow : Window
         _tray.DoubleClick += (_, _) => ShowWindow();
 
         _recorder.StatusChanged += (_, message) => Dispatch(() => SetStatus(message));
-        _recorder.CaptureStateChanged += (_, args) => Dispatch(() => SetCaptureUi(args.Capturing));
+        _recorder.CaptureStateChanged += async (_, args) =>
+        {
+            Dispatch(() => SetCaptureUi(args.Capturing));
+            if (!args.Capturing && args.Finalized && args.Automatic)
+            {
+                await LoadRecentMeetingsAsync().ConfigureAwait(false);
+            }
+        };
         _recorder.CaptionCaptured += (_, caption) => Dispatch(() => AddCaptionRow(caption));
 
         PasswordBox.KeyDown += async (_, e) =>

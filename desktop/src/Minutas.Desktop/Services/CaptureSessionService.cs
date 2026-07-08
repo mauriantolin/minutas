@@ -10,11 +10,15 @@ public sealed class CaptureSessionService
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private const string DefaultMeetingTitle = "Meeting with Microsoft Teams";
     private static readonly TimeSpan TitleDetectionWindow = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan MeetingStatusPollInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan MeetingAbsenceFinalizeDelay = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan CaptionSilenceFinalizeDelay = TimeSpan.FromSeconds(300);
 
     private readonly AppSettings _settings;
     private readonly AppPaths _paths;
     private readonly MeetingsApiClient _api;
     private readonly TeamsCaptionWatcher _captions;
+    private readonly SemaphoreSlim _stopLock = new(1, 1);
 
     private CaptureState? _state;
 
@@ -79,17 +83,28 @@ public sealed class CaptureSessionService
         _ = Task.Run(() => RunTitleDetectionLoopAsync(_state, _state.Cancellation.Token), CancellationToken.None);
         _ = Task.Run(() => RunCaptureAsync(_state, _state.Cancellation.Token), CancellationToken.None);
         _ = Task.Run(() => RunFlushLoopAsync(_state, _state.Cancellation.Token), CancellationToken.None);
+        _ = Task.Run(() => RunMeetingMonitorLoopAsync(_state, _state.Cancellation.Token), CancellationToken.None);
     }
 
-    public async Task<FinalizeResponse?> StopAsync(CancellationToken cancellationToken = default)
+    public async Task<FinalizeResponse?> StopAsync(CancellationToken cancellationToken = default, bool automatic = false)
     {
-        var state = _state;
-        if (state is null)
+        CaptureState? state;
+        await _stopLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            return null;
+            state = _state;
+            if (state is null)
+            {
+                return null;
+            }
+
+            _state = null;
+        }
+        finally
+        {
+            _stopLock.Release();
         }
 
-        _state = null;
         await state.Cancellation.CancelAsync().ConfigureAwait(false);
         RefreshMeetingTitleFromTeams(state);
         await EnsureMeetingRegisteredAsync(state, cancellationToken).ConfigureAwait(false);
@@ -117,20 +132,30 @@ public sealed class CaptureSessionService
         }
 
         state.Cancellation.Dispose();
-        CaptureStateChanged?.Invoke(this, new CaptureStateChangedEventArgs(false, state.MeetingId));
+        CaptureStateChanged?.Invoke(this, new CaptureStateChangedEventArgs(false, state.MeetingId, Finalized: true, Automatic: automatic));
         StatusChanged?.Invoke(this, result?.Error is null ? "Captura finalizada." : result.Error);
         return result;
     }
 
     public async Task CancelAsync()
     {
-        var state = _state;
-        if (state is null)
+        CaptureState? state;
+        await _stopLock.WaitAsync().ConfigureAwait(false);
+        try
         {
-            return;
+            state = _state;
+            if (state is null)
+            {
+                return;
+            }
+
+            _state = null;
+        }
+        finally
+        {
+            _stopLock.Release();
         }
 
-        _state = null;
         await state.Cancellation.CancelAsync().ConfigureAwait(false);
         state.Cancellation.Dispose();
         CaptureStateChanged?.Invoke(this, new CaptureStateChangedEventArgs(false, state.MeetingId));
@@ -212,6 +237,81 @@ public sealed class CaptureSessionService
         }
     }
 
+    private async Task RunMeetingMonitorLoopAsync(CaptureState state, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                var now = DateTimeOffset.UtcNow;
+                var status = _captions.GetStatus();
+
+                TryUpdateMeetingTitle(state, status.Title, notify: true);
+
+                if (status.MeetingActive)
+                {
+                    lock (state.Sync)
+                    {
+                        state.LastMeetingSurfaceSeenAt = now;
+                    }
+                }
+
+                DateTimeOffset? lastMeetingSurfaceSeenAt;
+                DateTimeOffset? lastCaptionSeenAt;
+                lock (state.Sync)
+                {
+                    lastMeetingSurfaceSeenAt = state.LastMeetingSurfaceSeenAt;
+                    lastCaptionSeenAt = state.LastCaptionSeenAt;
+                }
+
+                var lastActivitySeenAt = Latest(lastMeetingSurfaceSeenAt, lastCaptionSeenAt);
+
+                if (status.MeetingEnded && lastActivitySeenAt is not null)
+                {
+                    StatusChanged?.Invoke(this, "Reunión finalizada. Generando resumen...");
+                    await StopAsync(CancellationToken.None, automatic: true).ConfigureAwait(false);
+                    return;
+                }
+
+                if (lastCaptionSeenAt is not null &&
+                    now - lastCaptionSeenAt >= CaptionSilenceFinalizeDelay)
+                {
+                    StatusChanged?.Invoke(this, "No llegan subtítulos. Generando resumen...");
+                    await StopAsync(CancellationToken.None, automatic: true).ConfigureAwait(false);
+                    return;
+                }
+
+                if (lastCaptionSeenAt is null &&
+                    lastActivitySeenAt is not null &&
+                    !status.MeetingActive &&
+                    now - lastActivitySeenAt >= MeetingAbsenceFinalizeDelay)
+                {
+                    StatusChanged?.Invoke(this, "No se detecta la reunión. Generando resumen...");
+                    await StopAsync(CancellationToken.None, automatic: true).ConfigureAwait(false);
+                    return;
+                }
+
+                await Task.Delay(MeetingStatusPollInterval, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                StatusChanged?.Invoke(this, $"No se pudo monitorear Teams: {ex.Message}");
+                try
+                {
+                    await Task.Delay(MeetingStatusPollInterval, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
+        }
+    }
+
     private void OnCaptionFinal(object? sender, CaptionObservation observation)
     {
         var state = _state;
@@ -227,6 +327,7 @@ public sealed class CaptureSessionService
         lock (state.Sync)
         {
             state.DomReadCount++;
+            state.LastCaptionSeenAt = DateTimeOffset.UtcNow;
             state.Participants.Add(observation.Speaker);
             state.AllCaptionEvents.Add(caption);
             state.PendingCaptionEvents.Add(caption);
@@ -409,6 +510,21 @@ public sealed class CaptureSessionService
         return new CaptionSegment("caption", caption.SpeakerName, caption.T, Math.Max(endTime, caption.T + 0.2), caption.Text);
     }
 
+    private static DateTimeOffset? Latest(DateTimeOffset? first, DateTimeOffset? second)
+    {
+        if (first is null)
+        {
+            return second;
+        }
+
+        if (second is null)
+        {
+            return first;
+        }
+
+        return first > second ? first : second;
+    }
+
     private static double EstimateEndTime(CaptionEvent caption)
     {
         var words = caption.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
@@ -456,6 +572,7 @@ public sealed class CaptureSessionService
 
         var value = Regex.Replace(title.Trim(), @"^WebView2:\s*", "", RegexOptions.IgnoreCase);
         value = Regex.Replace(value, @"^Chat\s*\|\s*", "", RegexOptions.IgnoreCase);
+        value = Regex.Replace(value, @"^(Captions|Subt[ií]tulos)\s*\|\s*", "", RegexOptions.IgnoreCase);
         value = Regex.Replace(value, @"\s*\|\s*Microsoft Teams$", "", RegexOptions.IgnoreCase);
         return value.Trim();
     }
@@ -487,7 +604,11 @@ public sealed class CaptureSessionService
         return false;
     }
 
-    public sealed record CaptureStateChangedEventArgs(bool Capturing, string? MeetingId);
+    public sealed record CaptureStateChangedEventArgs(
+        bool Capturing,
+        string? MeetingId,
+        bool Finalized = false,
+        bool Automatic = false);
 
     private sealed class CaptureState
     {
@@ -526,6 +647,8 @@ public sealed class CaptureSessionService
         public object Sync { get; } = new();
         public int NextSeq { get; set; } = 1;
         public int DomReadCount { get; set; }
+        public DateTimeOffset? LastMeetingSurfaceSeenAt { get; set; }
+        public DateTimeOffset? LastCaptionSeenAt { get; set; }
         public CaptionEvent? PendingCaptionForSegment { get; set; }
         public List<CaptionEvent> AllCaptionEvents { get; } = [];
         public List<CaptionEvent> PendingCaptionEvents { get; } = [];

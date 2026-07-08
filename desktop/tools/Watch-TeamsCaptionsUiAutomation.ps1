@@ -259,6 +259,10 @@ function Get-TeamsWindowPriority {
     return 2
   }
 
+  if (Test-CaptionsWindowTitle $Name) {
+    return 1
+  }
+
   return -1
 }
 
@@ -272,6 +276,7 @@ function Normalize-TeamsTitle {
   $value = $Name.Trim()
   $value = $value -replace "^(?i)WebView2:\s*", ""
   $value = $value -replace "^(?i)Chat\s*\|\s*", ""
+  $value = $value -replace "^(?i)(Captions|Subt[ií]tulos)\s*\|\s*", ""
   $value = $value -replace "(?i)\s*\|\s*Microsoft Teams$", ""
   return $value.Trim()
 }
@@ -296,6 +301,17 @@ function Test-TeamsChatSurfaceTitle {
 
   $value = $Name.Trim() -replace "^(?i)WebView2:\s*", ""
   return $value -match "^(?i)Chat\s*\|"
+}
+
+function Test-CaptionsWindowTitle {
+  param([string]$Name)
+
+  if ([string]::IsNullOrWhiteSpace($Name)) {
+    return $false
+  }
+
+  $value = $Name.Trim() -replace "^(?i)WebView2:\s*", ""
+  return $value -match "^(?i)(Captions|Subt[ií]tulos)\s*\|"
 }
 
 function Test-WebViewCallWindowTitle {
@@ -348,6 +364,17 @@ function Test-MeetingSurfaceText {
   }
 
   return $score -ge 5
+}
+
+function Test-MeetingEndedText {
+  param([string]$Text)
+
+  if ([string]::IsNullOrWhiteSpace($Text)) {
+    return $false
+  }
+
+  $value = Normalize-Text $Text
+  return $value -match "(?i)\b(Meeting ended|Call ended|Meeting has ended|The meeting has ended|You left the meeting|You've left the meeting|You have left the meeting|La reuni[oó]n termin[oó]|La llamada termin[oó]|Reuni[oó]n finalizada|Llamada finalizada|Saliste de la reuni[oó]n|Has salido de la reuni[oó]n|Te fuiste de la reuni[oó]n)\b"
 }
 
 function Get-TextFromElement {
@@ -607,6 +634,7 @@ function Get-RootWebAreas {
 function Get-CaptionSnapshot {
   param(
     [double]$ElapsedSeconds,
+    [string]$WindowName,
     [System.Windows.Automation.AutomationElement]$RootWebArea
   )
 
@@ -617,8 +645,9 @@ function Get-CaptionSnapshot {
 
   $isOffscreen = Invoke-Safe { $RootWebArea.Current.IsOffscreen } $null
   $patternText = Get-TextFromElement $RootWebArea
+  $isCaptionsWindow = (Test-CaptionsWindowTitle $WindowName) -or (Test-CaptionsWindowTitle $name)
 
-  if (-not (Test-MeetingSurfaceText $patternText)) {
+  if (-not (Test-MeetingSurfaceText $patternText) -and -not $isCaptionsWindow) {
     return @()
   }
 
@@ -693,15 +722,17 @@ function Show-CaptionTargets {
         $preview = $preview.Substring(0, 220) + "..."
       }
       $isMeetingSurface = Test-MeetingSurfaceText $text
+      $isCaptionsWindow = (Test-CaptionsWindowTitle $windowName) -or (Test-CaptionsWindowTitle $name)
       $hasCaption = Test-CaptionLikeText $text
-      if (-not $isMeetingSurface -and -not $DebugTargets) {
+      $meetingEnded = Test-MeetingEndedText $text
+      if (-not $isMeetingSurface -and -not ($isCaptionsWindow -and $hasCaption) -and -not $meetingEnded -and -not $DebugTargets) {
         continue
       }
       if (-not $printedWindow) {
         Write-Host ("WINDOW pid={0} priority={1} class='{2}' name='{3}' {4}" -f $windowPid, $windowPriority, $windowClass, $windowName, $windowRect)
         $printedWindow = $true
       }
-      Write-Host ("  ROOT pid={0} offscreen={1} meetingChrome={2} captionLike={3} aid='{4}' class='{5}' name='{6}' {7}" -f $rootPid, $isOffscreen, $isMeetingSurface, $hasCaption, $automationId, $className, $name, $rect)
+      Write-Host ("  ROOT pid={0} offscreen={1} meetingChrome={2} captionLike={3} captionsWindow={4} meetingEnded={5} aid='{6}' class='{7}' name='{8}' {9}" -f $rootPid, $isOffscreen, $isMeetingSurface, $hasCaption, $isCaptionsWindow, $meetingEnded, $automationId, $className, $name, $rect)
       if ($preview) {
         Write-Host ("    text: {0}" -f $preview)
       }
@@ -900,8 +931,9 @@ while ($true) {
   $currentSnapshot = New-Object System.Collections.Generic.List[object]
 
   foreach ($window in $windows) {
+    $windowName = Invoke-Safe { $window.Current.Name } ""
     foreach ($rootWebArea in Get-RootWebAreas -Window $window) {
-      foreach ($caption in Get-CaptionSnapshot -ElapsedSeconds $elapsed -RootWebArea $rootWebArea) {
+      foreach ($caption in Get-CaptionSnapshot -ElapsedSeconds $elapsed -WindowName $windowName -RootWebArea $rootWebArea) {
         $currentSnapshot.Add($caption)
       }
     }
