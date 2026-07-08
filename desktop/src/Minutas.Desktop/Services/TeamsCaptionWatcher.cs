@@ -11,6 +11,47 @@ public sealed class TeamsCaptionWatcher
 {
     private static readonly Regex SpeakerLine = new(@"^(?<name>[^,;:!?()]{2,90})\s+\((?<org>[^)]+)\)$", RegexOptions.Compiled);
 
+    // Short, generic UI labels that could also be spoken words: only an EXACT line match is
+    // treated as chrome so we never swallow speech that merely contains them.
+    private static readonly HashSet<string> ChromeExactBlocklist = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "configuración", "configuracion", "ayuda", "temporizador", "alejar", "acercar",
+        "settings", "help", "zoom", "zoom in", "zoom out",
+    };
+
+    // Distinctive Teams control/notification strings that leak into the caption text region.
+    // A candidate line is chrome if it EQUALS or STARTS WITH one of these (full-line prefix,
+    // never a mid-sentence substring), covering the caption toolbar, the "More actions" menu
+    // and live-region announcements in ES + EN.
+    private static readonly string[] ChromePrefixBlocklist =
+    {
+        "más acciones", "mas acciones", "más opciones", "mas opciones",
+        "grabar y transcribir", "información de la reunión", "informacion de la reunion",
+        "configuración y efectos de vídeo", "configuracion y efectos de video",
+        "configuración de audio", "configuracion de audio", "idioma y voz",
+        "subtítulos en directo,", "subtitulos en directo,",
+        "subtítulos en vivo,", "subtitulos en vivo,",
+        "ocultar subtítulos", "ocultar subtitulos",
+        "mostrar subtítulos", "mostrar subtitulos",
+        "activar subtítulos", "activar subtitulos", "activar rtt",
+        "se ha iniciado el cierre del título", "se ha iniciado el cierre del titulo",
+        "el zoom se restableció", "el zoom se restablecio",
+        "cambiar tamaño de la galería", "cambiar tamano de la galeria",
+        "ha compartido pantalla en teams",
+        "more actions", "more options", "record and transcribe", "meeting info",
+        "language and speech", "live captions,", "hide live captions",
+        "show live captions", "turn on live captions",
+        "shared their screen", "closed captions started",
+    };
+
+    // Caption text lives in Text/Document nodes; menu entries and toolbar/caption controls are
+    // Buttons/MenuItems/ToolBars — reading their accessible Name as if it were speech is the bug.
+    private static readonly Condition ChromeControlCondition = new OrCondition(
+        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button),
+        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.MenuItem),
+        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ToolBar),
+        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.CheckBox));
+
     private readonly AppSettings _settings;
     private readonly Regex _windowTitleRegex;
 
@@ -106,7 +147,8 @@ public sealed class TeamsCaptionWatcher
         var teamsProcessIds = GetTeamsProcessIds();
         foreach (var root in GetActiveCaptionRoots(teamsProcessIds))
         {
-            foreach (var caption in ConvertCandidatesToCaptions(GetCaptionCandidates(root.PatternText)))
+            var chromeControlNames = GetChromeControlNames(root.Element);
+            foreach (var caption in ConvertCandidatesToCaptions(GetCaptionCandidates(root.PatternText), chromeControlNames))
             {
                 yield return new CaptionObservation(
                     Math.Round(elapsedSeconds, 3),
@@ -155,13 +197,25 @@ public sealed class TeamsCaptionWatcher
         return roots.Where(root => root.Score == bestScore).ToArray();
     }
 
-    private static IEnumerable<CaptionDraft> ConvertCandidatesToCaptions(IEnumerable<string> candidates)
+    private static IEnumerable<CaptionDraft> ConvertCandidatesToCaptions(
+        IEnumerable<string> candidates,
+        IReadOnlySet<string>? chromeControlNames = null)
     {
         var currentSpeaker = "";
 
         foreach (var candidate in candidates)
         {
             if (IsCaptionUiLine(candidate))
+            {
+                continue;
+            }
+
+            if (IsBlockedChrome(candidate))
+            {
+                continue;
+            }
+
+            if (chromeControlNames is not null && chromeControlNames.Contains(candidate.Trim()))
             {
                 continue;
             }
@@ -186,6 +240,49 @@ public sealed class TeamsCaptionWatcher
 
             yield return parsed;
         }
+    }
+
+    private static bool IsBlockedChrome(string line)
+    {
+        var value = line.Trim();
+        if (value.Length == 0)
+        {
+            return false;
+        }
+
+        if (ChromeExactBlocklist.Contains(value))
+        {
+            return true;
+        }
+
+        foreach (var prefix in ChromePrefixBlocklist)
+        {
+            if (value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static HashSet<string> GetChromeControlNames(AutomationElement root)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var controls = Safe(
+            () => root.FindAll(TreeScope.Descendants, ChromeControlCondition).Cast<AutomationElement>().ToArray(),
+            Array.Empty<AutomationElement>());
+
+        foreach (var control in controls)
+        {
+            var name = Safe(() => control.Current.Name, "");
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                names.Add(name.Trim());
+            }
+        }
+
+        return names;
     }
 
     private static IEnumerable<string> GetCaptionCandidates(string patternText)
