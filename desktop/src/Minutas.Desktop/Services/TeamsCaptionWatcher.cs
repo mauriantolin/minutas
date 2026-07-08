@@ -171,6 +171,10 @@ public sealed class TeamsCaptionWatcher
     private void LearnChrome(IEnumerable<string> chunks, double elapsedSeconds, DateTimeOffset now)
     {
         var present = new HashSet<string>(StringComparer.Ordinal);
+        // Chunks que parsean como habla real: inmunes al ChromeSet (baseline y persistencia).
+        // Un subtítulo que quede mucho tiempo en pantalla o que se diga en los primeros 3s
+        // no debe aprenderse como chrome.
+        var captions = new HashSet<string>(StringComparer.Ordinal);
         var inBaseline = elapsedSeconds < ChromeBaselineWindowSeconds;
 
         foreach (var chunk in chunks)
@@ -183,6 +187,12 @@ public sealed class TeamsCaptionWatcher
 
             present.Add(normalized);
 
+            if (ParsesAsCaptionLine(chunk))
+            {
+                captions.Add(normalized);
+                continue;
+            }
+
             if (inBaseline)
             {
                 _chromeSet.Add(normalized);
@@ -191,6 +201,11 @@ public sealed class TeamsCaptionWatcher
 
         foreach (var normalized in present)
         {
+            if (captions.Contains(normalized))
+            {
+                continue;
+            }
+
             if (!_chunkFirstSeen.TryGetValue(normalized, out var firstSeen))
             {
                 firstSeen = now;
@@ -427,6 +442,27 @@ public sealed class TeamsCaptionWatcher
         return match.Success
             ? new CaptionDraft(match.Groups["speaker"].Value.Trim(), match.Groups["text"].Value.Trim())
             : new CaptionDraft("", line.Trim());
+    }
+
+    // Un chunk "parsea como subtítulo" si es una cabecera de hablante ("Nombre (Org)") o una
+    // línea inline "Nombre (Org) texto" cuya porción de hablante pasa la misma detección
+    // (IsSpeakerLine). Reutiliza el parser de captions; no duplica reglas de reconocimiento.
+    private static bool ParsesAsCaptionLine(string chunk)
+    {
+        var line = chunk.Trim();
+        if (line.Length == 0)
+        {
+            return false;
+        }
+
+        if (IsSpeakerLine(SpeakerLine.Match(line)))
+        {
+            return true;
+        }
+
+        var parsed = ConvertToCaption(line);
+        return !string.IsNullOrWhiteSpace(parsed.Speaker) &&
+            IsSpeakerLine(SpeakerLine.Match(parsed.Speaker));
     }
 
     private static bool IsSpeakerLine(Match match)
