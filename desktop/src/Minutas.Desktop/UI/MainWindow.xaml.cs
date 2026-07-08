@@ -20,7 +20,6 @@ public sealed partial class MainWindow : Window
     private readonly CaptureSessionService _recorder;
     private readonly WindowsStartupService _startup;
     private readonly DesktopPreferencesService _preferences;
-    private readonly TeamsCaptionEnabler _captionEnabler;
     private readonly MeetingPresenceWatcher _presence;
     private readonly ObservableCollection<ActivityRow> _activityRows = new();
     private readonly DispatcherTimer _elapsedTimer = new();
@@ -45,7 +44,6 @@ public sealed partial class MainWindow : Window
         CaptureSessionService recorder,
         WindowsStartupService startup,
         DesktopPreferencesService preferences,
-        TeamsCaptionEnabler captionEnabler,
         MeetingPresenceWatcher presence)
     {
         _settings = settings;
@@ -54,7 +52,6 @@ public sealed partial class MainWindow : Window
         _recorder = recorder;
         _startup = startup;
         _preferences = preferences;
-        _captionEnabler = captionEnabler;
         _presence = presence;
 
         InitializeComponent();
@@ -175,7 +172,6 @@ public sealed partial class MainWindow : Window
         };
         _recorder.CaptionCaptured += (_, caption) => Dispatch(() => AddCaptionRow(caption));
 
-        _captionEnabler.StatusChanged += (_, message) => Dispatch(() => SetStatus(message));
         _presence.MeetingJoined += OnMeetingJoined;
         _presence.MeetingLeft += OnMeetingLeft;
 
@@ -350,7 +346,6 @@ public sealed partial class MainWindow : Window
             _activityRows.Add(new ActivityRow("Esperando subtítulos de Teams...", "", null));
             SetCaptureUi(true);
             await _recorder.StartAsync().ConfigureAwait(false);
-            _ = _captionEnabler.EnsureCaptionsEnabledAsync(CancellationToken.None);
         }
         catch (Exception ex)
         {

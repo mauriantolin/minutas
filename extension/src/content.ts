@@ -6,7 +6,6 @@ import type {
 } from "@teams-agent-core/shared";
 import {
   captionsPresent,
-  enableCaptions,
   meetingPresent,
   observeCaptions,
   observeMeetingPresence,
@@ -71,8 +70,8 @@ function flushCaptions() {
 }
 
 // Captions are the only transcript source, so an empty timeline means nothing is
-// being captured. While the meeting is live, keep nudging Teams to turn subtitles
-// on and show a persistent backstop notice; clear both once captions flow.
+// being captured. Minutix does not click Teams menus; show a persistent backstop
+// notice until captions flow.
 function watchCaptions() {
   if (captionTimeline.length > 0) {
     widget?.setNotice(null);
@@ -81,8 +80,9 @@ function watchCaptions() {
     return;
   }
   if (!meetingPresent()) return;
-  widget?.setNotice("Activá los subtítulos en vivo de Teams para transcribir");
-  void enableCaptions().catch(() => {});
+  widget?.setNotice(
+    "Activá los subtítulos de Teams: Configuración > Accesibilidad > Subtítulos",
+  );
 }
 
 let dead = false;
@@ -250,12 +250,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       endedAt: new Date().toISOString(),
       segments: captionSegments,
     });
-  } else if (msg.type === "ENABLE_CAPTIONS") {
-    if (captionsPresent()) {
-      sendResponse({ enabled: true });
-    } else {
-      void enableCaptions().then((enabled) => sendResponse({ enabled }));
-    }
   }
   return true;
 });
