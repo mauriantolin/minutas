@@ -13,5 +13,6 @@ public sealed record AppSettings
     public TimeSpan CaptionPollInterval { get; init; } = TimeSpan.FromMilliseconds(750);
     public TimeSpan SegmentFlushInterval { get; init; } = TimeSpan.FromSeconds(5);
     public int SegmentFlushMax { get; init; } = 20;
+    public bool AutoCapture { get; init; } = true;
     public string WindowTitlePattern { get; init; } = @"(\| Microsoft Teams$|^Microsoft Teams$|Teams$)";
 }

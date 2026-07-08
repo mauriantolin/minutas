@@ -265,6 +265,7 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <Grid Grid.Row="0">
@@ -357,6 +358,16 @@
                            Foreground="{StaticResource MutedBrush}"
                            FontSize="12"
                            Margin="0,14,0,0" />
+
+                <CheckBox x:Name="AutoCaptureCheck"
+                          Grid.Row="4"
+                          Content="Captura automática al entrar a una reunión"
+                          Foreground="{StaticResource MutedBrush}"
+                          FontSize="12.5"
+                          IsChecked="True"
+                          Cursor="Hand"
+                          Margin="0,12,0,0"
+                          ToolTip="Al detectar una reunión de Teams activa, inicia la captura de subtítulos y los enciende automáticamente." />
             </Grid>
         </Border>
 

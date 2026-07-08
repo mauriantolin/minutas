@@ -16,12 +16,14 @@ internal static class Program
         var api = new MeetingsApiClient(settings, auth, httpClient);
         var captions = new TeamsCaptionWatcher(settings);
         var recorder = new CaptureSessionService(settings, appData, api, captions);
+        var captionEnabler = new TeamsCaptionEnabler(captions);
+        var presence = new MeetingPresenceWatcher(captions);
 
         var app = new System.Windows.Application
         {
             ShutdownMode = System.Windows.ShutdownMode.OnExplicitShutdown
         };
 
-        app.Run(new MainWindow(settings, auth, api, recorder));
+        app.Run(new MainWindow(settings, auth, api, recorder, captionEnabler, presence));
     }
 }

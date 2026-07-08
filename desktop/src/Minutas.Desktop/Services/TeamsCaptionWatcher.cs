@@ -23,6 +23,16 @@ public sealed class TeamsCaptionWatcher
     public event EventHandler<CaptionObservation>? CaptionFinal;
     public event EventHandler<string>? StatusChanged;
 
+    internal IReadOnlyList<AutomationElement> GetActiveTeamsWindows()
+    {
+        return GetTopLevelTeamsWindows(GetTeamsProcessIds()).ToArray();
+    }
+
+    internal bool AreCaptionsVisible()
+    {
+        return GetActiveCaptionRoots(GetTeamsProcessIds()).Count > 0;
+    }
+
     public string? GetCurrentMeetingTitle()
     {
         var teamsProcessIds = GetTeamsProcessIds();

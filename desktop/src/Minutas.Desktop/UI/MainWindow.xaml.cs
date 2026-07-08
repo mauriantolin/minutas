@@ -18,6 +18,8 @@ public sealed partial class MainWindow : Window
     private readonly CognitoAuthClient _auth;
     private readonly MeetingsApiClient _api;
     private readonly CaptureSessionService _recorder;
+    private readonly TeamsCaptionEnabler _captionEnabler;
+    private readonly MeetingPresenceWatcher _presence;
     private readonly ObservableCollection<ActivityRow> _activityRows = new();
     private readonly DispatcherTimer _elapsedTimer = new();
     private readonly Forms.NotifyIcon _tray;
@@ -25,22 +27,30 @@ public sealed partial class MainWindow : Window
     private DateTimeOffset? _captureStartedAt;
     private string? _signedEmail;
     private bool _reallyClose;
+    private bool _autoCaptureEnabled;
+    private bool _autoStartedCapture;
 
     public MainWindow(
         AppSettings settings,
         CognitoAuthClient auth,
         MeetingsApiClient api,
-        CaptureSessionService recorder)
+        CaptureSessionService recorder,
+        TeamsCaptionEnabler captionEnabler,
+        MeetingPresenceWatcher presence)
     {
         _settings = settings;
         _auth = auth;
         _api = api;
         _recorder = recorder;
+        _captionEnabler = captionEnabler;
+        _presence = presence;
 
         InitializeComponent();
 
         ActivityList.ItemsSource = _activityRows;
         EmailBox.Text = "";
+        _autoCaptureEnabled = _settings.AutoCapture;
+        AutoCaptureCheck.IsChecked = _settings.AutoCapture;
         SetStatus("Listo.");
         SetCaptureUi(false);
 
@@ -69,6 +79,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        _presence.Dispose();
         _tray.Dispose();
         base.OnClosing(e);
     }
@@ -125,6 +136,13 @@ public sealed partial class MainWindow : Window
         _recorder.CaptureStateChanged += (_, args) => Dispatch(() => SetCaptureUi(args.Capturing));
         _recorder.CaptionCaptured += (_, caption) => Dispatch(() => AddCaptionRow(caption));
 
+        _captionEnabler.StatusChanged += (_, message) => Dispatch(() => SetStatus(message));
+        _presence.MeetingJoined += OnMeetingJoined;
+        _presence.MeetingLeft += OnMeetingLeft;
+
+        AutoCaptureCheck.Checked += (_, _) => _autoCaptureEnabled = true;
+        AutoCaptureCheck.Unchecked += (_, _) => _autoCaptureEnabled = false;
+
         PasswordBox.KeyDown += async (_, e) =>
         {
             if (e.Key == Key.Enter)
@@ -159,10 +177,12 @@ public sealed partial class MainWindow : Window
 
             if (hasSession)
             {
+                _presence.Start();
                 await LoadRecentMeetingsAsync().ConfigureAwait(false);
             }
             else
             {
+                _presence.Stop();
                 Dispatch(() =>
                 {
                     _activityRows.Clear();
@@ -200,6 +220,7 @@ public sealed partial class MainWindow : Window
                 SetAccount(email);
                 ToggleAuthPanels(true);
             });
+            _presence.Start();
             await LoadRecentMeetingsAsync().ConfigureAwait(false);
             Dispatch(() => SetStatus("Listo."));
         }
@@ -220,6 +241,8 @@ public sealed partial class MainWindow : Window
             await StopCaptureAsync().ConfigureAwait(false);
         }
 
+        _presence.Stop();
+        _autoStartedCapture = false;
         _auth.SignOut();
         _signedEmail = null;
         Dispatch(() =>
@@ -273,7 +296,7 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async Task StartCaptureAsync()
+    private async Task StartCaptureAsync(bool autoStarted = false)
     {
         if (_recorder.IsCapturing)
         {
@@ -282,6 +305,7 @@ public sealed partial class MainWindow : Window
 
         try
         {
+            _autoStartedCapture = autoStarted;
             StartButton.IsEnabled = false;
             SetStatus("Preparando captura...");
             _captureStartedAt = DateTimeOffset.Now;
@@ -290,9 +314,11 @@ public sealed partial class MainWindow : Window
             _activityRows.Add(new ActivityRow("Esperando subtítulos de Teams...", "", null));
             SetCaptureUi(true);
             await _recorder.StartAsync().ConfigureAwait(false);
+            _ = _captionEnabler.EnsureCaptionsEnabledAsync(CancellationToken.None);
         }
         catch (Exception ex)
         {
+            _autoStartedCapture = false;
             Dispatch(() =>
             {
                 _captureStartedAt = null;
@@ -312,6 +338,8 @@ public sealed partial class MainWindow : Window
         {
             return;
         }
+
+        _autoStartedCapture = false;
 
         try
         {
@@ -343,6 +371,8 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        _autoStartedCapture = false;
+
         try
         {
             SetStatus("Descartando captura...");
@@ -354,6 +384,68 @@ public sealed partial class MainWindow : Window
         {
             Dispatch(() => SetStatus($"No se pudo descartar: {ex.Message}"));
         }
+    }
+
+    private void OnMeetingJoined(object? sender, EventArgs e)
+    {
+        _ = HandleMeetingJoinedAsync();
+    }
+
+    private async Task HandleMeetingJoinedAsync()
+    {
+        if (!_autoCaptureEnabled || _recorder.IsCapturing)
+        {
+            return;
+        }
+
+        bool hasSession;
+        try
+        {
+            hasSession = await _auth.HasSessionAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            return;
+        }
+
+        if (!hasSession)
+        {
+            Dispatch(() => _tray.ShowBalloonTip(
+                4000,
+                "Minutix",
+                "Se detectó una reunión de Teams. Iniciá sesión en Minutix para transcribir automáticamente.",
+                Forms.ToolTipIcon.Info));
+            return;
+        }
+
+        await DispatchAsync(async () =>
+        {
+            if (!_recorder.IsCapturing)
+            {
+                await StartCaptureAsync(autoStarted: true);
+            }
+        }).ConfigureAwait(false);
+    }
+
+    private void OnMeetingLeft(object? sender, EventArgs e)
+    {
+        _ = HandleMeetingLeftAsync();
+    }
+
+    private async Task HandleMeetingLeftAsync()
+    {
+        if (!_autoStartedCapture || !_recorder.IsCapturing)
+        {
+            return;
+        }
+
+        await DispatchAsync(async () =>
+        {
+            if (_autoStartedCapture && _recorder.IsCapturing)
+            {
+                await StopCaptureAsync();
+            }
+        }).ConfigureAwait(false);
     }
 
     private async Task ExitAsync()
@@ -501,6 +593,16 @@ public sealed partial class MainWindow : Window
         }
 
         Dispatcher.Invoke(action);
+    }
+
+    private Task DispatchAsync(Func<Task> action)
+    {
+        if (Dispatcher.CheckAccess())
+        {
+            return action();
+        }
+
+        return Dispatcher.InvokeAsync(action).Task.Unwrap();
     }
 
     private static string Initials(string value)
