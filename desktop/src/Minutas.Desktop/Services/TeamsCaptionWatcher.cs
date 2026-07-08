@@ -26,13 +26,8 @@ public sealed class TeamsCaptionWatcher
     public string? GetCurrentMeetingTitle()
     {
         var teamsProcessIds = GetTeamsProcessIds();
-        var nativeCallTitle = GetCurrentMeetingTitleFromNativeWindow(teamsProcessIds, exactCallOnly: true);
-        if (!string.IsNullOrWhiteSpace(nativeCallTitle))
-        {
-            return nativeCallTitle;
-        }
 
-        foreach (var root in GetActiveCaptionRoots(teamsProcessIds))
+        foreach (var root in GetActiveMeetingRoots(teamsProcessIds, requireCaptions: false))
         {
             foreach (var title in new[] { root.RootName, root.WindowName })
             {
@@ -44,7 +39,7 @@ public sealed class TeamsCaptionWatcher
             }
         }
 
-        return GetCurrentMeetingTitleFromNativeWindow(teamsProcessIds, exactCallOnly: false);
+        return null;
     }
 
     public async Task WatchAsync(DateTimeOffset startedAt, CancellationToken cancellationToken)
@@ -94,7 +89,7 @@ public sealed class TeamsCaptionWatcher
     private IEnumerable<CaptionObservation> ReadSnapshot(double elapsedSeconds)
     {
         var teamsProcessIds = GetTeamsProcessIds();
-        foreach (var root in GetActiveCaptionRoots(teamsProcessIds))
+        foreach (var root in GetActiveMeetingRoots(teamsProcessIds, requireCaptions: true))
         {
             foreach (var caption in ConvertCandidatesToCaptions(GetCaptionCandidates(root.PatternText)))
             {
@@ -108,7 +103,7 @@ public sealed class TeamsCaptionWatcher
         }
     }
 
-    private IReadOnlyList<CaptionRootSnapshot> GetActiveCaptionRoots(HashSet<int> teamsProcessIds)
+    private IReadOnlyList<CaptionRootSnapshot> GetActiveMeetingRoots(HashSet<int> teamsProcessIds, bool requireCaptions)
     {
         var roots = new List<CaptionRootSnapshot>();
 
@@ -118,15 +113,20 @@ public sealed class TeamsCaptionWatcher
             foreach (var rootWebArea in GetRootWebAreas(window))
             {
                 var rootName = Safe(() => rootWebArea.Current.Name, "");
-                if (IsTeamsChatSurfaceTitle(windowName) || IsTeamsChatSurfaceTitle(rootName))
+                if (IsTeamsChatSurfaceTitle(windowName) ||
+                    IsTeamsChatSurfaceTitle(rootName))
                 {
                     continue;
                 }
 
                 var isOffscreen = Safe<bool?>(() => rootWebArea.Current.IsOffscreen, null);
                 var patternText = GetTextFromElement(rootWebArea);
+                if (!IsMeetingSurface(patternText))
+                {
+                    continue;
+                }
 
-                if (!IsCaptionLikeText(patternText))
+                if (requireCaptions && !IsCaptionLikeText(patternText))
                 {
                     continue;
                 }
@@ -495,7 +495,7 @@ public sealed class TeamsCaptionWatcher
             var automationId = Safe(() => window.Current.AutomationId, "");
             var handle = Safe(() => window.Current.NativeWindowHandle, 0);
 
-            if (IsTeamsAppSurfaceTitle(name) || IsTeamsChatSurfaceTitle(name))
+            if (IsTeamsChatSurfaceTitle(name))
             {
                 continue;
             }
@@ -542,8 +542,7 @@ public sealed class TeamsCaptionWatcher
             yield break;
         }
 
-        var bestPriority = candidates.Min(candidate => candidate.Priority);
-        foreach (var candidate in candidates.Where(candidate => candidate.Priority == bestPriority))
+        foreach (var candidate in candidates.OrderBy(candidate => candidate.Priority))
         {
             yield return candidate.Element;
         }
@@ -610,7 +609,7 @@ public sealed class TeamsCaptionWatcher
 
         if (string.IsNullOrWhiteSpace(value) ||
             value.Equals("Microsoft Teams", StringComparison.OrdinalIgnoreCase) ||
-            IsTeamsAppSurfaceTitle(value))
+            Regex.IsMatch(value, @"^(Subframe|Utility|Manager|GPU Process|Crashpad)\b", RegexOptions.IgnoreCase))
         {
             return null;
         }
@@ -632,19 +631,14 @@ public sealed class TeamsCaptionWatcher
             score -= 20;
         }
 
-        if (GetTeamsWindowPriority(rootName) == 0 || GetTeamsWindowPriority(windowName) == 0)
-        {
-            score -= 10;
-        }
-
         if (IsTeamsChatSurfaceTitle(rootName) || IsTeamsChatSurfaceTitle(windowName))
         {
             score += 1000;
         }
 
-        if (IsTeamsAppSurfaceTitle(rootName) || IsTeamsAppSurfaceTitle(windowName))
+        if (IsWebViewCallWindowTitle(rootName) || IsWebViewCallWindowTitle(windowName))
         {
-            score += 100;
+            score -= 5;
         }
 
         if (isOffscreen == false)
@@ -658,9 +652,52 @@ public sealed class TeamsCaptionWatcher
     private static bool ContainsActiveMeetingChrome(string text)
     {
         return Regex.IsMatch(
-            text,
-            @"\b(Share content|Leave|Raise your hand|Open audio options|Open video options|Turn camera on|Mute mic|People|React|Rooms|Apps)\b",
+            NormalizeText(text),
+            @"\b(Share content|Compartir contenido|Leave|Salir|Abandonar|Raise your hand|Levantar la mano|Open audio options|Opciones de audio|Open video options|Opciones de video|Turn camera on|Activar c[aá]mara|Mute mic|Silenciar|People|Personas|Participants|Participantes|React|Reaccionar|Rooms|Salas|Notes|Notas)\b",
             RegexOptions.IgnoreCase);
+    }
+
+    private static bool IsMeetingSurface(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var value = NormalizeText(text);
+        var score = 0;
+
+        if (Regex.IsMatch(value, @"\b(Leave|Salir|Abandonar|Colgar)\b", RegexOptions.IgnoreCase))
+        {
+            score += 3;
+        }
+
+        if (Regex.IsMatch(value, @"\b(Share content|Compartir contenido|Presentar)\b", RegexOptions.IgnoreCase))
+        {
+            score += 2;
+        }
+
+        if (Regex.IsMatch(value, @"\b(Raise your hand|Levantar la mano)\b", RegexOptions.IgnoreCase))
+        {
+            score += 2;
+        }
+
+        if (Regex.IsMatch(value, @"\b(Open audio options|Opciones de audio|Mute mic|Silenciar|Unmute|Reactivar audio)\b", RegexOptions.IgnoreCase))
+        {
+            score += 2;
+        }
+
+        if (Regex.IsMatch(value, @"\b(Open video options|Opciones de video|Turn camera on|Activar c[aá]mara|Camera|C[aá]mara)\b", RegexOptions.IgnoreCase))
+        {
+            score += 2;
+        }
+
+        if (Regex.IsMatch(value, @"\b(People|Personas|Participants|Participantes|React|Reaccionar|Rooms|Salas|Notes|Notas)\b", RegexOptions.IgnoreCase))
+        {
+            score += 1;
+        }
+
+        return score >= 5;
     }
 
     private static bool ContainsCaptionChrome(string text)
@@ -714,7 +751,7 @@ public sealed class TeamsCaptionWatcher
         }
 
         var value = NormalizeTeamsTitle(name);
-        return !IsTeamsAppSurfaceTitle(value) &&
+        return !value.Equals("Microsoft Teams", StringComparison.OrdinalIgnoreCase) &&
             !Regex.IsMatch(value, @"^(Subframe|Utility|Manager|GPU Process|Crashpad)\b", RegexOptions.IgnoreCase);
     }
 
@@ -724,17 +761,6 @@ public sealed class TeamsCaptionWatcher
         value = Regex.Replace(value, @"^Chat\s*\|\s*", "", RegexOptions.IgnoreCase);
         value = Regex.Replace(value, @"\s*\|\s*Microsoft Teams$", "", RegexOptions.IgnoreCase);
         return value.Trim();
-    }
-
-    private string? GetCurrentMeetingTitleFromNativeWindow(HashSet<int> teamsProcessIds, bool exactCallOnly)
-    {
-        return GetVisibleTeamsWindowHandles(teamsProcessIds)
-            .Select(handle => GetWindowText(handle))
-            .Select(title => new { Title = title, Priority = GetTeamsWindowPriority(title) })
-            .Where(candidate => candidate.Priority >= 0 && (!exactCallOnly || candidate.Priority == 0))
-            .OrderBy(candidate => candidate.Priority)
-            .Select(candidate => CleanMeetingTitle(candidate.Title))
-            .FirstOrDefault(title => !string.IsNullOrWhiteSpace(title));
     }
 
     private IEnumerable<AutomationElement> GetRootWebAreas(AutomationElement window)
@@ -779,7 +805,7 @@ public sealed class TeamsCaptionWatcher
             var className = GetClassName(hWnd);
             var visible = IsWindowVisible(hWnd);
 
-            if (IsTeamsAppSurfaceTitle(title) || IsTeamsChatSurfaceTitle(title))
+            if (IsTeamsChatSurfaceTitle(title))
             {
                 return true;
             }

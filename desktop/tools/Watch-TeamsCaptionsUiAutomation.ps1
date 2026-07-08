@@ -6,7 +6,8 @@ param(
   [string]$JsonOutputPath = (Join-Path (Get-Location) "teams-captions-live.jsonl"),
   [string]$WindowTitlePattern = "(\| Microsoft Teams$|^Microsoft Teams$|Teams$)",
   [string[]]$KnownSpeaker = @(),
-  [switch]$ListTargets
+  [switch]$ListTargets,
+  [switch]$DebugTargets
 )
 
 $ErrorActionPreference = "Stop"
@@ -115,7 +116,7 @@ function Get-VisibleTeamsWindowHandles {
     $className = Get-WindowClassByHandle $hWnd
     $visible = [Win32TeamsCaptionWatcher]::IsWindowVisible($hWnd)
 
-    if ((Test-TeamsAppSurfaceTitle $title) -or (Test-TeamsChatSurfaceTitle $title)) {
+    if (Test-TeamsChatSurfaceTitle $title) {
       return $true
     }
 
@@ -163,7 +164,7 @@ function Get-TopLevelTeamsWindows {
     $automationId = Invoke-Safe { $window.Current.AutomationId } ""
     $handle = Invoke-Safe { $window.Current.NativeWindowHandle } 0
 
-    if ((Test-TeamsAppSurfaceTitle $name) -or (Test-TeamsChatSurfaceTitle $name)) {
+    if (Test-TeamsChatSurfaceTitle $name) {
       continue
     }
 
@@ -217,8 +218,7 @@ function Get-TopLevelTeamsWindows {
     return @()
   }
 
-  $bestPriority = ($targets | Measure-Object -Property Priority -Minimum).Minimum
-  return @($targets | Where-Object { $_.Priority -eq $bestPriority } | ForEach-Object { $_.Element })
+  return @($targets | Sort-Object Priority | ForEach-Object { $_.Element })
 }
 
 function Test-MeetingWindowName {
@@ -314,8 +314,40 @@ function Test-WebViewCallWindowTitle {
   }
 
   $value = Normalize-TeamsTitle $Name
-  return -not (Test-TeamsAppSurfaceTitle $value) -and
+  return $value -ne "Microsoft Teams" -and
     $value -notmatch "^(?i)(Subframe|Utility|Manager|GPU Process|Crashpad)\b"
+}
+
+function Test-MeetingSurfaceText {
+  param([string]$Text)
+
+  if ([string]::IsNullOrWhiteSpace($Text)) {
+    return $false
+  }
+
+  $value = Normalize-Text $Text
+  $score = 0
+
+  if ($value -match "(?i)\b(Leave|Salir|Abandonar|Colgar)\b") {
+    $score += 3
+  }
+  if ($value -match "(?i)\b(Share content|Compartir contenido|Presentar)\b") {
+    $score += 2
+  }
+  if ($value -match "(?i)\b(Raise your hand|Levantar la mano)\b") {
+    $score += 2
+  }
+  if ($value -match "(?i)\b(Open audio options|Opciones de audio|Mute mic|Silenciar|Unmute|Reactivar audio)\b") {
+    $score += 2
+  }
+  if ($value -match "(?i)\b(Open video options|Opciones de video|Turn camera on|Activar c[aá]mara|Camera|C[aá]mara)\b") {
+    $score += 2
+  }
+  if ($value -match "(?i)\b(People|Personas|Participants|Participantes|React|Reaccionar|Rooms|Salas|Notes|Notas)\b") {
+    $score += 1
+  }
+
+  return $score -ge 5
 }
 
 function Get-TextFromElement {
@@ -586,6 +618,10 @@ function Get-CaptionSnapshot {
   $isOffscreen = Invoke-Safe { $RootWebArea.Current.IsOffscreen } $null
   $patternText = Get-TextFromElement $RootWebArea
 
+  if (-not (Test-MeetingSurfaceText $patternText)) {
+    return @()
+  }
+
   if (-not (Test-CaptionLikeText $patternText)) {
     return @()
   }
@@ -621,26 +657,28 @@ function Convert-Rect {
 
 function Show-CaptionTargets {
   $teamsProcessIds = Get-TeamsProcessIds
-  Write-Host "Native Teams windows that look relevant:"
-  foreach ($handle in Get-VisibleTeamsWindowHandles -TeamsProcessIds $teamsProcessIds) {
-    [uint32]$windowProcessId = 0
-    [void][Win32TeamsCaptionWatcher]::GetWindowThreadProcessId($handle, [ref]$windowProcessId)
-    $title = Get-WindowTextByHandle $handle
-    $className = Get-WindowClassByHandle $handle
-    $priority = Get-TeamsWindowPriority $title
-    $visible = [Win32TeamsCaptionWatcher]::IsWindowVisible($handle)
-    Write-Host ("HANDLE pid={0} visible={1} priority={2} class='{3}' title='{4}'" -f $windowProcessId, $visible, $priority, $className, $title)
+  if ($DebugTargets) {
+    Write-Host "Native Teams windows that look relevant:"
+    foreach ($handle in Get-VisibleTeamsWindowHandles -TeamsProcessIds $teamsProcessIds) {
+      [uint32]$windowProcessId = 0
+      [void][Win32TeamsCaptionWatcher]::GetWindowThreadProcessId($handle, [ref]$windowProcessId)
+      $title = Get-WindowTextByHandle $handle
+      $className = Get-WindowClassByHandle $handle
+      $priority = Get-TeamsWindowPriority $title
+      $visible = [Win32TeamsCaptionWatcher]::IsWindowVisible($handle)
+      Write-Host ("HANDLE pid={0} visible={1} priority={2} class='{3}' title='{4}'" -f $windowProcessId, $visible, $priority, $className, $title)
+    }
   }
 
   $windows = @(Get-TopLevelTeamsWindows -TeamsProcessIds $teamsProcessIds)
-  Write-Host "Candidate Teams windows/root web areas:"
+  Write-Host "Confirmed Teams meeting windows/root web areas:"
   foreach ($window in $windows) {
     $windowName = Invoke-Safe { $window.Current.Name } ""
     $windowPid = Invoke-Safe { $window.Current.ProcessId } 0
     $windowClass = Invoke-Safe { $window.Current.ClassName } ""
     $windowPriority = Get-TeamsWindowPriority $windowName
     $windowRect = Convert-Rect (Invoke-Safe { $window.Current.BoundingRectangle } $null)
-    Write-Host ("WINDOW pid={0} priority={1} class='{2}' name='{3}' {4}" -f $windowPid, $windowPriority, $windowClass, $windowName, $windowRect)
+    $printedWindow = $false
 
     foreach ($rootWebArea in Get-RootWebAreas -Window $window) {
       $name = Invoke-Safe { $rootWebArea.Current.Name } ""
@@ -654,8 +692,16 @@ function Show-CaptionTargets {
       if ($preview.Length -gt 220) {
         $preview = $preview.Substring(0, 220) + "..."
       }
+      $isMeetingSurface = Test-MeetingSurfaceText $text
       $hasCaption = Test-CaptionLikeText $text
-      Write-Host ("  ROOT pid={0} offscreen={1} captionLike={2} aid='{3}' class='{4}' name='{5}' {6}" -f $rootPid, $isOffscreen, $hasCaption, $automationId, $className, $name, $rect)
+      if (-not $isMeetingSurface -and -not $DebugTargets) {
+        continue
+      }
+      if (-not $printedWindow) {
+        Write-Host ("WINDOW pid={0} priority={1} class='{2}' name='{3}' {4}" -f $windowPid, $windowPriority, $windowClass, $windowName, $windowRect)
+        $printedWindow = $true
+      }
+      Write-Host ("  ROOT pid={0} offscreen={1} meetingChrome={2} captionLike={3} aid='{4}' class='{5}' name='{6}' {7}" -f $rootPid, $isOffscreen, $isMeetingSurface, $hasCaption, $automationId, $className, $name, $rect)
       if ($preview) {
         Write-Host ("    text: {0}" -f $preview)
       }

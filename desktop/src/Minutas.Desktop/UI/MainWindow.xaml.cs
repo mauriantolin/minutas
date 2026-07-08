@@ -18,24 +18,37 @@ public sealed partial class MainWindow : Window
     private readonly CognitoAuthClient _auth;
     private readonly MeetingsApiClient _api;
     private readonly CaptureSessionService _recorder;
+    private readonly WindowsStartupService _startup;
+    private readonly DesktopPreferencesService _preferences;
     private readonly ObservableCollection<ActivityRow> _activityRows = new();
     private readonly DispatcherTimer _elapsedTimer = new();
+    private readonly DispatcherTimer _autoCaptureTimer = new();
     private readonly Forms.NotifyIcon _tray;
 
     private DateTimeOffset? _captureStartedAt;
     private string? _signedEmail;
+    private bool _authUiInitialized;
+    private bool _loadingStartupPreference;
+    private bool _loadingAutoCapturePreference;
+    private bool _autoCaptureMeetingsEnabled = true;
+    private bool _autoCaptureChecking;
+    private string? _suppressedAutoCaptureTitle;
     private bool _reallyClose;
 
     public MainWindow(
         AppSettings settings,
         CognitoAuthClient auth,
         MeetingsApiClient api,
-        CaptureSessionService recorder)
+        CaptureSessionService recorder,
+        WindowsStartupService startup,
+        DesktopPreferencesService preferences)
     {
         _settings = settings;
         _auth = auth;
         _api = api;
         _recorder = recorder;
+        _startup = startup;
+        _preferences = preferences;
 
         InitializeComponent();
 
@@ -43,19 +56,37 @@ public sealed partial class MainWindow : Window
         EmailBox.Text = "";
         SetStatus("Listo.");
         SetCaptureUi(false);
+        AutoCaptureMeetingsCheckBox.IsChecked = true;
+        UpdateAutoCaptureHint();
+        RefreshStartupPreference();
 
         _tray = BuildTray();
         _elapsedTimer.Interval = TimeSpan.FromSeconds(1);
         _elapsedTimer.Tick += (_, _) => RefreshElapsed();
+        _autoCaptureTimer.Interval = TimeSpan.FromSeconds(5);
+        _autoCaptureTimer.Tick += async (_, _) => await CheckAutoCaptureAsync();
+        _autoCaptureTimer.Start();
 
         WireEvents();
         RefreshPlaceholders();
     }
 
+    public async Task InitializeAsync()
+    {
+        if (_authUiInitialized)
+        {
+            return;
+        }
+
+        _authUiInitialized = true;
+        await RefreshAutoCapturePreferenceAsync().ConfigureAwait(false);
+        await RefreshAuthUiAsync();
+    }
+
     protected override async void OnContentRendered(EventArgs e)
     {
         base.OnContentRendered(e);
-        await RefreshAuthUiAsync();
+        await InitializeAsync();
     }
 
     protected override void OnClosing(CancelEventArgs e)
@@ -119,6 +150,10 @@ public sealed partial class MainWindow : Window
         CancelButton.Click += async (_, _) => await CancelCaptureAsync();
         OpenLiveButton.Click += (_, _) => OpenLive();
         OpenPanelButton.Click += (_, _) => OpenUrl(_settings.DashboardUrl);
+        AutoCaptureMeetingsCheckBox.Checked += async (_, _) => await SetAutoCaptureMeetingsAsync(true);
+        AutoCaptureMeetingsCheckBox.Unchecked += async (_, _) => await SetAutoCaptureMeetingsAsync(false);
+        StartupWithWindowsCheckBox.Checked += (_, _) => SetStartupWithWindows(true);
+        StartupWithWindowsCheckBox.Unchecked += (_, _) => SetStartupWithWindows(false);
         _tray.DoubleClick += (_, _) => ShowWindow();
 
         _recorder.StatusChanged += (_, message) => Dispatch(() => SetStatus(message));
@@ -319,7 +354,11 @@ public sealed partial class MainWindow : Window
             CancelButton.IsEnabled = false;
             SetStatus("Finalizando y generando resumen...");
             await _recorder.StopAsync().ConfigureAwait(false);
-            Dispatch(() => SetCaptureUi(false));
+            Dispatch(() =>
+            {
+                SetCaptureUi(false);
+                SuppressCurrentAutoCaptureMeeting();
+            });
             await LoadRecentMeetingsAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -347,7 +386,11 @@ public sealed partial class MainWindow : Window
         {
             SetStatus("Descartando captura...");
             await _recorder.CancelAsync().ConfigureAwait(false);
-            Dispatch(() => SetCaptureUi(false));
+            Dispatch(() =>
+            {
+                SetCaptureUi(false);
+                SuppressCurrentAutoCaptureMeeting();
+            });
             await LoadRecentMeetingsAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -375,6 +418,163 @@ public sealed partial class MainWindow : Window
         LoginPanel.Visibility = signedIn ? Visibility.Collapsed : Visibility.Visible;
         AccountPanel.Visibility = signedIn ? Visibility.Visible : Visibility.Collapsed;
         StartButton.IsEnabled = signedIn && !_recorder.IsCapturing;
+    }
+
+    private void RefreshStartupPreference()
+    {
+        _loadingStartupPreference = true;
+        try
+        {
+            StartupWithWindowsCheckBox.IsEnabled = true;
+            StartupWithWindowsCheckBox.IsChecked = _startup.IsEnabledForCurrentExecutable();
+            StartupHintText.Text = "Se abre minimizado en la bandeja.";
+        }
+        catch (Exception ex)
+        {
+            StartupWithWindowsCheckBox.IsEnabled = false;
+            StartupHintText.Text = $"No se pudo leer la configuración: {ex.Message}";
+        }
+        finally
+        {
+            _loadingStartupPreference = false;
+        }
+    }
+
+    private async Task RefreshAutoCapturePreferenceAsync()
+    {
+        _loadingAutoCapturePreference = true;
+        try
+        {
+            var preferences = await _preferences.ReadAsync().ConfigureAwait(false);
+            Dispatch(() =>
+            {
+                _autoCaptureMeetingsEnabled = preferences.AutoCaptureMeetings;
+                AutoCaptureMeetingsCheckBox.IsChecked = preferences.AutoCaptureMeetings;
+                UpdateAutoCaptureHint();
+            });
+        }
+        catch (Exception ex)
+        {
+            Dispatch(() =>
+            {
+                AutoCaptureMeetingsCheckBox.IsEnabled = false;
+                AutoCaptureHintText.Text = $"No se pudo leer la configuración: {ex.Message}";
+            });
+        }
+        finally
+        {
+            _loadingAutoCapturePreference = false;
+        }
+    }
+
+    private async Task SetAutoCaptureMeetingsAsync(bool enabled)
+    {
+        if (_loadingAutoCapturePreference)
+        {
+            return;
+        }
+
+        try
+        {
+            _autoCaptureMeetingsEnabled = enabled;
+            UpdateAutoCaptureHint();
+            await _preferences.SetAutoCaptureMeetingsAsync(enabled).ConfigureAwait(false);
+            Dispatch(() => SetStatus(enabled
+                ? "Captura automática activada."
+                : "Captura automática desactivada."));
+        }
+        catch (Exception ex)
+        {
+            Dispatch(() => SetStatus($"No se pudo actualizar captura automática: {ex.Message}"));
+        }
+    }
+
+    private async Task CheckAutoCaptureAsync()
+    {
+        if (_autoCaptureChecking ||
+            !_autoCaptureMeetingsEnabled ||
+            _recorder.IsCapturing ||
+            string.IsNullOrWhiteSpace(_signedEmail))
+        {
+            return;
+        }
+
+        _autoCaptureChecking = true;
+        try
+        {
+            var title = await Task.Run(() => _recorder.DetectCurrentMeetingTitle());
+            if (!IsAutoCaptureMeetingTitle(title))
+            {
+                _suppressedAutoCaptureTitle = null;
+                return;
+            }
+
+            if (string.Equals(title, _suppressedAutoCaptureTitle, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            SetStatus($"Reunión detectada: {title}. Iniciando captura...");
+            await StartCaptureAsync();
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"No se pudo iniciar captura automática: {ex.Message}");
+        }
+        finally
+        {
+            _autoCaptureChecking = false;
+        }
+    }
+
+    private void UpdateAutoCaptureHint()
+    {
+        AutoCaptureHintText.Text = _autoCaptureMeetingsEnabled
+            ? "Detecta una llamada de Teams Desktop y empieza a transcribir."
+            : "Podés iniciar manualmente con el botón de abajo.";
+    }
+
+    private void SuppressCurrentAutoCaptureMeeting()
+    {
+        try
+        {
+            var title = _recorder.DetectCurrentMeetingTitle();
+            _suppressedAutoCaptureTitle = IsAutoCaptureMeetingTitle(title) ? title : null;
+        }
+        catch
+        {
+            _suppressedAutoCaptureTitle = null;
+        }
+    }
+
+    private void SetStartupWithWindows(bool enabled)
+    {
+        if (_loadingStartupPreference)
+        {
+            return;
+        }
+
+        try
+        {
+            if (enabled)
+            {
+                _startup.EnableForCurrentExecutable();
+                SetStatus("Minutix se iniciará con Windows.");
+            }
+            else
+            {
+                _startup.Disable();
+                SetStatus("Inicio con Windows desactivado.");
+            }
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"No se pudo actualizar inicio con Windows: {ex.Message}");
+        }
+        finally
+        {
+            RefreshStartupPreference();
+        }
     }
 
     private void SetAccount(string? email)
@@ -543,6 +743,19 @@ public sealed partial class MainWindow : Window
         return elapsed.TotalHours >= 1
             ? elapsed.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture)
             : elapsed.ToString(@"mm\:ss", CultureInfo.InvariantCulture);
+    }
+
+    private static bool IsAutoCaptureMeetingTitle(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return false;
+        }
+
+        return !title.Equals("Microsoft Teams", StringComparison.OrdinalIgnoreCase) &&
+            !title.Equals("Calendar", StringComparison.OrdinalIgnoreCase) &&
+            !title.Equals("Chat", StringComparison.OrdinalIgnoreCase) &&
+            !title.Equals("Meeting with Microsoft Teams", StringComparison.OrdinalIgnoreCase);
     }
 
     public sealed record ActivityRow(string Title, string Meta, string? Url);
