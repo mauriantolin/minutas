@@ -15,11 +15,15 @@ public sealed class MeetingPresenceWatcher : IDisposable
     private static readonly Condition ButtonCondition =
         new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button);
 
-    private static readonly string[] LeaveNames =
+    // Teams v2 (ES) renders the short label "Salir" on the leave button — a Contains match
+    // against the old long forms never fired, so presence was never detected. Match the
+    // real short labels exactly (trim, case-insensitive) plus the long-form prefixes.
+    private static readonly string[] LeaveExactNames =
     {
-        "leave", "colgar", "abandonar", "hang up", "salir de la reunión",
-        "salir de la reunion", "salir de la llamada", "finalizar llamada", "end call"
+        "salir", "colgar", "leave", "hang up", "finalizar llamada", "end call"
     };
+
+    private static readonly string[] LeaveContainsNames = { "salir de la ", "leave call", "hang up" };
 
     private static readonly string[] LeaveIds = { "hangup", "leave-button", "hangup-leave", "end-meeting" };
 
@@ -138,7 +142,7 @@ public sealed class MeetingPresenceWatcher : IDisposable
             foreach (var button in buttons)
             {
                 var name = Safe(() => button.Current.Name, "");
-                if (NameContainsAny(name, LeaveNames))
+                if (IsLeaveName(name))
                 {
                     return true;
                 }
@@ -152,6 +156,20 @@ public sealed class MeetingPresenceWatcher : IDisposable
         }
 
         return false;
+    }
+
+    private static bool IsLeaveName(string value)
+    {
+        var trimmed = value.Trim();
+        foreach (var exact in LeaveExactNames)
+        {
+            if (string.Equals(trimmed, exact, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return NameContainsAny(trimmed, LeaveContainsNames);
     }
 
     private static bool NameContainsAny(string value, string[] needles)

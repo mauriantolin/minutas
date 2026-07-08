@@ -67,12 +67,26 @@ const SELECTORS = {
     'button[data-tid="hangup-main-btn"]',
     '[data-tid="hangup-leave-button"]',
     '[data-tid="hangup-end-meeting-button"]',
+    'button[aria-label="Salir"]',
+    'button[aria-label="Leave"]',
+    '[aria-label*="Salir"]',
+    '[aria-label*="Colgar"]',
+    '[aria-label*="Leave"]',
+    '[aria-label*="Hang up"]',
   ],
   // Documented menu path to turn live captions on programmatically.
   moreButton: ['button[data-tid="more-button"]', "#callingButtons-showMoreBtn"],
   languageSpeechMenu: ["#LanguageSpeechMenuControl-id"],
   captionsToggle: ["#closed-captions-button"],
 };
+
+// Accessible-name fallbacks (ES/EN). UIA Name == DOM accessible name, so these strings
+// come straight from a real v2 meeting dump and match aria-label/title/text.
+const CAPTIONS_ON_NAMES = ["ocultar subtítulos", "ocultar subtitulos", "hide live captions", "hide captions"];
+const TURN_ON_NAMES = ["activar subtítulos", "activar subtitulos", "turn on live captions", "turn on captions", "mostrar subtítulos", "mostrar subtitulos", "show live captions", "show captions"];
+const MORE_MENU_NAMES = ["más opciones", "mas opciones", "more options", "more call options", "más", "more"];
+const LANGUAGE_MENU_NAMES = ["idioma y voz", "idioma y habla", "language and speech", "language & speech"];
+const CAPTION_PANE_NAMES = ["subtítulos en directo", "subtitulos en directo", "live captions"];
 
 // A caption line superseded by a newer one gets this grace to absorb its last
 // in-place refinement before we emit its verbatim text; prune/stop are immediate.
@@ -209,6 +223,54 @@ export function readLocalUserName(): string {
 export function captionsPresent(): boolean {
   for (const root of roots()) {
     if (firstMatch(root, SELECTORS.captionPane)) return true;
+    // Region-scoped so the "Activar subtítulos" menu item can't be mistaken for the pane.
+    for (const el of root.querySelectorAll(
+      "[role='region'], [role='log'], [role='complementary']",
+    )) {
+      const label = (el.getAttribute("aria-label") ?? "").trim().toLowerCase();
+      if (label && CAPTION_PANE_NAMES.some((n) => label.includes(n))) return true;
+    }
+  }
+  return false;
+}
+
+function accessibleName(el: Element): string {
+  return (
+    el.getAttribute("aria-label") ||
+    (el as HTMLElement).title ||
+    el.textContent ||
+    ""
+  )
+    .trim()
+    .toLowerCase();
+}
+
+function findByName(root: ParentNode, needles: string[]): HTMLElement | null {
+  const els = root.querySelectorAll<HTMLElement>(
+    "button, [role='button'], [role='menuitem'], [role='menuitemcheckbox'], [role='menuitemradio'], [aria-label], [title]",
+  );
+  for (const el of els) {
+    const label = accessibleName(el);
+    if (label && needles.some((n) => label.includes(n))) return el;
+  }
+  return null;
+}
+
+function clickByName(needles: string[]): boolean {
+  for (const root of roots()) {
+    const el = findByName(root, needles);
+    if (el) {
+      el.click();
+      return true;
+    }
+  }
+  return false;
+}
+
+/** ON when the UI exposes an "Ocultar subtítulos"/"Hide captions" affordance. */
+function captionsAlreadyOn(): boolean {
+  for (const root of roots()) {
+    if (findByName(root, CAPTIONS_ON_NAMES)) return true;
   }
   return false;
 }
@@ -412,13 +474,16 @@ function clickFirst(selectors: string[]): boolean {
 
 async function tryEnableCaptionsOnce(): Promise<boolean> {
   try {
-    if (!clickFirst(SELECTORS.moreButton)) return false;
+    if (captionsAlreadyOn()) return true;
+    if (!clickFirst(SELECTORS.moreButton) && !clickByName(MORE_MENU_NAMES)) return false;
     await sleep(600);
-    if (!clickFirst(SELECTORS.languageSpeechMenu)) return false;
+    if (!clickFirst(SELECTORS.languageSpeechMenu) && !clickByName(LANGUAGE_MENU_NAMES))
+      return false;
     await sleep(600);
-    if (!clickFirst(SELECTORS.captionsToggle)) return false;
+    if (captionsAlreadyOn()) return true;
+    if (!clickFirst(SELECTORS.captionsToggle) && !clickByName(TURN_ON_NAMES)) return false;
     await sleep(2000);
-    return captionsPresent();
+    return captionsAlreadyOn() || captionsPresent();
   } finally {
     for (const root of roots()) {
       root.body?.dispatchEvent(
@@ -435,10 +500,25 @@ async function tryEnableCaptionsOnce(): Promise<boolean> {
  * attempt. Verified with captionsPresent().
  */
 export async function enableCaptions(): Promise<boolean> {
+  if (captionsAlreadyOn() || captionsPresent()) return true;
   for (let attempt = 0; attempt < 4; attempt++) {
-    if (captionsPresent()) return true;
+    if (captionsAlreadyOn() || captionsPresent()) return true;
     if (await tryEnableCaptionsOnce()) return true;
     await sleep(1500);
   }
-  return captionsPresent();
+  if (captionsAlreadyOn() || captionsPresent()) return true;
+  // Last resort: the Alt+Shift+C chord toggles captions, so only fire it while still OFF.
+  if (!captionsAlreadyOn()) {
+    document.body.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "C",
+        code: "KeyC",
+        altKey: true,
+        shiftKey: true,
+        bubbles: true,
+      }),
+    );
+    await sleep(1500);
+  }
+  return captionsAlreadyOn() || captionsPresent();
 }

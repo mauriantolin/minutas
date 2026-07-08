@@ -13,15 +13,21 @@ public sealed class TeamsCaptionEnabler
         new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem),
         new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.CheckBox));
 
-    private static readonly string[] MoreNames = { "more options", "more actions", "más opciones", "mas opciones" };
+    private static readonly string[] MoreNames = { "more options", "more actions", "more call options", "más opciones", "mas opciones", "más" };
     private static readonly string[] MoreIds = { "showmore", "more-button", "morebtn", "moreoptions" };
     private static readonly string[] LanguageNames = { "language and speech", "language & speech", "idioma y voz", "idioma y habla" };
     private static readonly string[] LanguageIds = { "languagespeech", "language-speech" };
-    private static readonly string[] TurnOnNames = { "turn on live captions", "turn on captions", "activar subtítulos en vivo", "activar subtitulos en vivo", "activar subtítulos", "activar subtitulos", "show live captions" };
-    private static readonly string[] TurnOffNames = { "turn off live captions", "turn off captions", "desactivar subtítulos en vivo", "desactivar subtitulos en vivo", "desactivar subtítulos", "desactivar subtitulos", "hide live captions" };
+    private static readonly string[] TurnOnNames = { "turn on live captions", "turn on captions", "activar subtítulos en directo", "activar subtitulos en directo", "activar subtítulos en vivo", "activar subtitulos en vivo", "activar subtítulos", "activar subtitulos", "mostrar subtítulos", "mostrar subtitulos", "show live captions", "show captions" };
+    // When captions are ON the UI exposes a "hide"/"ocultar" affordance and never a "turn
+    // on" one — its presence is our authoritative "already enabled" signal, so we never
+    // re-toggle and switch them back off.
+    private static readonly string[] CaptionsOnNames = { "ocultar subtítulos", "ocultar subtitulos", "hide live captions", "hide captions", "turn off live captions", "turn off captions", "desactivar subtítulos", "desactivar subtitulos" };
     private static readonly string[] CaptionIds = { "closed-captions-button", "closed-captions", "live-captions" };
 
     private const byte VkEscape = 0x1B;
+    private const byte VkMenu = 0x12;
+    private const byte VkShift = 0x10;
+    private const byte VkC = 0x43;
     private const uint KeyEventKeyUp = 0x0002;
 
     private readonly TeamsCaptionWatcher _windows;
@@ -35,6 +41,11 @@ public sealed class TeamsCaptionEnabler
 
     public async Task<bool> EnsureCaptionsEnabledAsync(CancellationToken cancellationToken)
     {
+        if (CaptionsAlreadyOn())
+        {
+            return true;
+        }
+
         for (var attempt = 0; attempt < 4; attempt++)
         {
             if (cancellationToken.IsCancellationRequested)
@@ -42,7 +53,7 @@ public sealed class TeamsCaptionEnabler
                 return false;
             }
 
-            if (_windows.AreCaptionsVisible())
+            if (CaptionsAlreadyOn())
             {
                 return true;
             }
@@ -58,13 +69,27 @@ public sealed class TeamsCaptionEnabler
             }
         }
 
-        if (_windows.AreCaptionsVisible())
+        if (CaptionsAlreadyOn())
+        {
+            return true;
+        }
+
+        // Last resort: the Alt+Shift+C shortcut toggles captions, so we only fire it when
+        // they are still OFF — firing it while ON would turn them back off.
+        SendCaptionsShortcut();
+        await DelayAsync(1500, cancellationToken).ConfigureAwait(false);
+        if (CaptionsAlreadyOn())
         {
             return true;
         }
 
         StatusChanged?.Invoke(this, "No se pudieron activar los subtítulos de Teams. Activalos manualmente (Más opciones → Idioma y voz) y seguiremos leyendo.");
         return false;
+    }
+
+    private bool CaptionsAlreadyOn()
+    {
+        return _windows.AreCaptionsVisible() || FindControl(CaptionsOnNames, null) is not null;
     }
 
     private async Task<bool> TryEnableOnceAsync(CancellationToken cancellationToken)
@@ -93,9 +118,9 @@ public sealed class TeamsCaptionEnabler
                 return false;
             }
 
-            // Captions already on: the submenu offers "turn off", never "turn on" — so we
-            // never re-click and accidentally toggle them back off.
-            if (FindControl(TurnOffNames, null) is not null)
+            // Captions already on: the submenu offers "hide"/"turn off", never "turn on" —
+            // so we never re-click and accidentally toggle them back off.
+            if (CaptionsAlreadyOn())
             {
                 return true;
             }
@@ -186,6 +211,37 @@ public sealed class TeamsCaptionEnabler
         }
 
         return false;
+    }
+
+    private void SendCaptionsShortcut()
+    {
+        try
+        {
+            var foreground = GetForegroundWindow();
+            if (foreground == IntPtr.Zero)
+            {
+                return;
+            }
+
+            GetWindowThreadProcessId(foreground, out var processId);
+
+            // Only inject the chord when Teams owns the foreground, so the toggle never
+            // leaks into another app the user switched to.
+            if (!IsTeamsProcess((int)processId))
+            {
+                return;
+            }
+
+            keybd_event(VkMenu, 0, 0, UIntPtr.Zero);
+            keybd_event(VkShift, 0, 0, UIntPtr.Zero);
+            keybd_event(VkC, 0, 0, UIntPtr.Zero);
+            keybd_event(VkC, 0, KeyEventKeyUp, UIntPtr.Zero);
+            keybd_event(VkShift, 0, KeyEventKeyUp, UIntPtr.Zero);
+            keybd_event(VkMenu, 0, KeyEventKeyUp, UIntPtr.Zero);
+        }
+        catch
+        {
+        }
     }
 
     private void CloseMenus()
