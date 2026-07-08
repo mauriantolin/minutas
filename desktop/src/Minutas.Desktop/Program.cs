@@ -20,6 +20,7 @@ internal static class Program
         var recorder = new CaptureSessionService(settings, appData, api, captions);
         var startup = new WindowsStartupService();
         var preferences = new DesktopPreferencesService(appData);
+        var presence = new MeetingPresenceWatcher(captions);
         var startMinimized = args.Any(arg => string.Equals(arg, MinimizedArgument, StringComparison.OrdinalIgnoreCase));
 
         var app = new System.Windows.Application
@@ -27,7 +28,7 @@ internal static class Program
             ShutdownMode = System.Windows.ShutdownMode.OnExplicitShutdown
         };
 
-        var window = new MainWindow(settings, auth, api, recorder, startup, preferences);
+        var window = new MainWindow(settings, auth, api, recorder, startup, preferences, presence);
         app.MainWindow = window;
         app.Startup += async (_, _) => await window.InitializeAsync();
         if (!startMinimized)

@@ -8,7 +8,7 @@
         MinWidth="378"
         MaxWidth="460"
         MinHeight="620"
-        ResizeMode="CanMinimize"
+        ResizeMode="CanResizeWithGrip"
         WindowStartupLocation="CenterScreen"
         Background="#08090D"
         Foreground="#FAFAFF"

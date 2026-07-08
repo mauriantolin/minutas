@@ -51,18 +51,16 @@ function stopElapsed() {
 
 function setCapturing(
   capturing: boolean,
-  live?: { meetingId?: string; startedAt?: string; mode?: string },
+  live?: { meetingId?: string; startedAt?: string },
 ) {
   show("start", !capturing);
   show("stop", capturing);
   show("cancel", capturing);
   show("live-row", capturing);
   show("mode-row", capturing);
-  show("consent-row", !capturing);
   if (capturing) {
     liveMeetingId = live?.meetingId;
-    $("mode-label").textContent =
-      live?.mode === "captions" ? "Subtítulos de Teams" : "Audio (Transcribe)";
+    $("mode-label").textContent = "Subtítulos de Teams";
     startElapsed(live?.startedAt);
   } else {
     liveMeetingId = undefined;
@@ -76,8 +74,6 @@ function emailFromToken(token: string): string {
   const b64 = token.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/");
   return (JSON.parse(atob(b64)).email as string | undefined) ?? "";
 }
-
-const consentTier = (): number => Number(($("consent") as HTMLSelectElement).value);
 
 // Non-blocking: capture runs fine without captions, but caption coverage is the
 // cheapest speaker-fidelity signal, so nudge the user to turn them on.
@@ -141,11 +137,7 @@ async function enterCaptureView(token: string) {
   $("user-email").textContent = email;
   $("avatar").textContent = email.slice(0, 2).toUpperCase();
 
-  const { consentTierPref, autoCapture } = await chrome.storage.local.get([
-    "consentTierPref",
-    "autoCapture",
-  ]);
-  ($("consent") as HTMLSelectElement).value = String(consentTierPref ?? 0);
+  const { autoCapture } = await chrome.storage.local.get("autoCapture");
   // Default ON: absent means enabled.
   ($("autostart") as HTMLInputElement).checked = autoCapture !== false;
 
@@ -168,13 +160,8 @@ async function init() {
   }
 }
 
-$("consent").addEventListener("change", () =>
-  void chrome.storage.local.set({ consentTierPref: consentTier() }),
-);
-
 // Read by the service worker on MEETING_DETECTED: ON = every detected meeting is
-// captured automatically from the Teams live captions (audio recording only applies
-// to manual captures — captions mode never records audio).
+// captured automatically from the Teams live captions.
 $("autostart").addEventListener("change", (e) =>
   void chrome.storage.local.set({ autoCapture: (e.target as HTMLInputElement).checked }),
 );
@@ -210,27 +197,9 @@ $("signout").addEventListener("click", async () => {
   status("");
 });
 
-// The mic permission can't be requested from the popup — the prompt steals focus, the
-// popup closes, and the request aborts. So we check the current permission state and, if
-// it isn't granted yet, open a dedicated extension tab that shows the prompt reliably.
-// Once granted for the extension origin, the offscreen document inherits it.
-async function micGranted(): Promise<boolean> {
-  try {
-    const p = await navigator.permissions.query({ name: "microphone" as PermissionName });
-    return p.state === "granted";
-  } catch {
-    return false;
-  }
-}
-
 $("start").addEventListener("click", async () => {
-  if (!(await micGranted())) {
-    chrome.tabs.create({ url: chrome.runtime.getURL("permission.html") });
-    status("Habilitá el micrófono en la pestaña que se abrió y volvé a tocar Empezar.");
-    return;
-  }
   status("Iniciando captura…");
-  const res = await chrome.runtime.sendMessage({ type: "POPUP_START", consentTier: consentTier() });
+  const res = await chrome.runtime.sendMessage({ type: "POPUP_START" });
   if (res?.error) return status(`Error: ${res.error}`);
   setCapturing(true, res);
   captionsHint(!!res.captionsDetected);
@@ -242,8 +211,7 @@ $("stop").addEventListener("click", async () => {
   const res = await chrome.runtime.sendMessage({ type: "POPUP_STOP" });
   setCapturing(false);
   if (res?.error) return status(`Error: ${res.error}`);
-  const warning = res?.audioWarning ? ` Atención: ${res.audioWarning}.` : "";
-  status(`Listo. Reunión ${res.meetingId ?? ""} guardada.${warning}`);
+  status(`Listo. Reunión ${res.meetingId ?? ""} guardada.`);
 });
 
 $("cancel").addEventListener("click", async () => {

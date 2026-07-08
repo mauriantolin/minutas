@@ -12,6 +12,7 @@
     <AssemblyName>Minutix.Desktop</AssemblyName>
     <RootNamespace>Minutas.Desktop</RootNamespace>
     <Product>Minutix Desktop</Product>
+    <AssemblyTitle>Minutix Desktop</AssemblyTitle>
     <Description>Minutix Teams Desktop companion</Description>
     <DefaultItemExcludes>$(DefaultItemExcludes);bin\**;obj\**</DefaultItemExcludes>
   </PropertyGroup>

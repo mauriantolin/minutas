@@ -8,10 +8,8 @@ const ZIP_OUT = "../web/public/minutix-extension.zip";
 
 const entries = {
   background: "src/background.ts",
-  offscreen: "src/offscreen.ts",
   content: "src/content.ts",
   popup: "src/popup.ts",
-  permission: "src/permission.ts",
 };
 
 const opts = {

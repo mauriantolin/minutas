@@ -110,13 +110,13 @@ export const listMeetings = (t: string): Promise<{ meetings: Meeting[] }> =>
   req(t, "/meetings");
 
 export const getMeeting = (t: string, id: string): Promise<MeetingDetail> =>
-  req(t, `/meetings/${id}`);
+  req(t, `/meetings/${encodeURIComponent(id)}`);
 
 export const askMeeting = (t: string, id: string, question: string): Promise<{ answer: string }> =>
-  req(t, `/meetings/${id}/ask`, { method: "POST", body: JSON.stringify({ question }) });
+  req(t, `/meetings/${encodeURIComponent(id)}/ask`, { method: "POST", body: JSON.stringify({ question }) });
 
 export const deleteMeeting = (t: string, id: string): Promise<{ deleted: string }> =>
-  req(t, `/meetings/${id}`, { method: "DELETE" });
+  req(t, `/meetings/${encodeURIComponent(id)}`, { method: "DELETE" });
 
 export const reprocessMeeting = (t: string, id: string): Promise<{ meetingId: string; executionArn: string }> =>
-  req(t, `/meetings/${id}/reprocess`, { method: "POST", body: JSON.stringify({}) });
+  req(t, `/meetings/${encodeURIComponent(id)}/reprocess`, { method: "POST", body: JSON.stringify({}) });

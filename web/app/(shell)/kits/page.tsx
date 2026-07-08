@@ -137,7 +137,7 @@ export default function KitsPage() {
         onSelect={(meetingId) => {
           const prompt = pendingPrompt;
           setPendingPrompt(null);
-          router.push(`/meeting?id=${meetingId}&prompt=${encodeURIComponent(prompt ?? "")}`);
+          router.push(`/meeting?id=${encodeURIComponent(meetingId)}&prompt=${encodeURIComponent(prompt ?? "")}`);
         }}
       />
     </>

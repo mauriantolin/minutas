@@ -155,7 +155,7 @@ export function DetailHeader({
         </Breadcrumb>
         <div className="flex shrink-0 items-center gap-2">
           {meeting.status === "capturing" ? (
-            <Link href={`/live?id=${meeting.meetingId}`}>{statusBadge}</Link>
+            <Link href={`/live?id=${encodeURIComponent(meeting.meetingId)}`}>{statusBadge}</Link>
           ) : (
             statusBadge
           )}

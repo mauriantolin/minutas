@@ -102,7 +102,7 @@ export function LiveView({ meetingId }: { meetingId: string | null }) {
             : "La reunión quedó marcada para revisión",
         );
       }
-      router.replace(`/meeting?id=${meetingId}`);
+      router.replace(`/meeting?id=${encodeURIComponent(meetingId)}`);
     }
     prevStatusRef.current = status;
   }, [status, meetingId, router]);
@@ -178,7 +178,7 @@ export function LiveView({ meetingId }: { meetingId: string | null }) {
                 <Alert variant="destructive">
                   <AlertTitle>El procesamiento falló.</AlertTitle>
                   <AlertDescription>
-                    <Link href={`/meeting?id=${meetingId}`} className="underline underline-offset-4">
+                    <Link href={`/meeting?id=${encodeURIComponent(meetingId)}`} className="underline underline-offset-4">
                       Abrir la reunión
                     </Link>
                   </AlertDescription>

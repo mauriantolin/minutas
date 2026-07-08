@@ -7,6 +7,7 @@ import type {
 import {
   captionsPresent,
   enableCaptions,
+  meetingPresent,
   observeCaptions,
   observeMeetingPresence,
   readActiveSpeaker,
@@ -18,15 +19,10 @@ import { mountWidget, type LiveWidget, type TagId } from "./widget.js";
 
 // Runs inside the Teams PWA. Captures the two free DOM signals — live captions
 // (MutationObserver, primary) and the active-speaker ring (400 ms poll, fallback) —
-// plus signalHealth over both, and renders a live-transcript overlay. In audio mode
-// the overlay is driven by LIVE_LINE messages from the offscreen document; in
-// captions mode the caption observer feeds it directly and each final caption is
-// synthesized into a DiarizedSegment shipped over the same SEGMENT_FINAL path the
-// offscreen document uses.
+// plus signalHealth over both, and renders a live-transcript overlay. The caption
+// observer feeds the overlay directly and each final caption is synthesized into a
+// DiarizedSegment shipped over the SEGMENT_FINAL path. Captions are the only source.
 
-type CaptureMode = "audio" | "captions";
-
-let captureMode: CaptureMode = "audio";
 let timeline: SpeakerTimelineEntry[] = [];
 let captionTimeline: CaptionEvent[] = [];
 let captionSegments: DiarizedSegment[] = [];
@@ -38,6 +34,7 @@ let poll: number | undefined;
 
 let stopCaptions: (() => void) | undefined;
 let captionFlushTimer: number | undefined;
+let captionWatchdog: number | undefined;
 let captionFlushMark = 0;
 let domReadCount = 0;
 let speakerRingSeen = false;
@@ -48,6 +45,7 @@ let healthDirty = false;
 
 const POLL_MS = 400;
 const CAPTION_FLUSH_MS = 5000;
+const CAPTION_WATCHDOG_MS = 15_000;
 
 const nowT = () => (Date.now() - startEpoch) / 1000;
 
@@ -70,6 +68,21 @@ function flushCaptions() {
   captionFlushMark = captionTimeline.length;
   healthDirty = false;
   send({ type: "CAPTION_CHECKPOINT", events, signalHealth: signalHealth() });
+}
+
+// Captions are the only transcript source, so an empty timeline means nothing is
+// being captured. While the meeting is live, keep nudging Teams to turn subtitles
+// on and show a persistent backstop notice; clear both once captions flow.
+function watchCaptions() {
+  if (captionTimeline.length > 0) {
+    widget?.setNotice(null);
+    if (captionWatchdog) window.clearInterval(captionWatchdog);
+    captionWatchdog = undefined;
+    return;
+  }
+  if (!meetingPresent()) return;
+  widget?.setNotice("Activá los subtítulos en vivo de Teams para transcribir");
+  void enableCaptions().catch(() => {});
 }
 
 let dead = false;
@@ -95,6 +108,7 @@ function teardown() {
   dead = true;
   if (poll) window.clearInterval(poll);
   if (captionFlushTimer) window.clearInterval(captionFlushTimer);
+  if (captionWatchdog) window.clearInterval(captionWatchdog);
   stopCaptions?.();
   presenceStop?.();
   widget?.destroy();
@@ -131,11 +145,6 @@ function recordHighlight(tag: TagId) {
   highlights.push({ t: nowT(), tag });
 }
 
-function labelFor(source: string, speakerLabel: string): string {
-  if (source === "mic") return localUserName;
-  return lastName || speakerLabel;
-}
-
 // --- Captions-primary segments (captions ARE the transcript) -----------------
 
 // A caption's true end isn't observable, so segment N ships when final N+1
@@ -157,8 +166,7 @@ function shipCaptionSegment(e: CaptionEvent, endTime: number) {
 
 function onCaptionFinal(e: CaptionEvent) {
   captionTimeline.push(e);
-  if (captureMode !== "captions") return;
-  // The widget already mirrors this line via onCaptionUpdate (keyed, in place); a
+  // The widget already mirrors this line via upsertCaption (keyed, in place); a
   // renderLine here would push a divergent duplicate. Only ship the backend segment.
   if (pendingCaption) shipCaptionSegment(pendingCaption, e.t);
   pendingCaption = e;
@@ -177,9 +185,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     // below), and its timers must not keep running alongside the new ones.
     if (poll) window.clearInterval(poll);
     if (captionFlushTimer) window.clearInterval(captionFlushTimer);
+    if (captionWatchdog) window.clearInterval(captionWatchdog);
     stopCaptions?.();
     stopCaptions = undefined;
-    captureMode = msg.mode === "captions" ? "captions" : "audio";
     timeline = [];
     captionTimeline = [];
     captionSegments = [];
@@ -203,11 +211,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         domReadCount += 1;
         healthDirty = true;
       },
-      (e, lineId) => {
-        if (captureMode === "captions") widget?.upsertCaption(lineId, e.speakerName, e.text);
-      },
+      (e, lineId) => widget?.upsertCaption(lineId, e.speakerName, e.text),
     );
     captionFlushTimer = window.setInterval(flushCaptions, CAPTION_FLUSH_MS);
+    captionWatchdog = window.setInterval(watchCaptions, CAPTION_WATCHDOG_MS);
     highlights = [];
     widget?.destroy();
     widget = mountWidget({ startEpoch, onTag: recordHighlight });
@@ -220,6 +227,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   } else if (msg.type === "CAPTURE_STOP") {
     if (poll) window.clearInterval(poll);
     if (captionFlushTimer) window.clearInterval(captionFlushTimer);
+    if (captionWatchdog) window.clearInterval(captionWatchdog);
+    captionWatchdog = undefined;
     // stopCaptions finalizes still-tracked utterances → onCaptionFinal may ship
     // one more segment and leave a new pendingCaption, so flush after it.
     stopCaptions?.();
@@ -239,10 +248,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       participantNames: [...participants],
       signalHealth: signalHealth(),
       endedAt: new Date().toISOString(),
-      ...(captureMode === "captions" && { segments: captionSegments }),
+      segments: captionSegments,
     });
-  } else if (msg.type === "LIVE_LINE") {
-    widget?.renderLine(labelFor(msg.source, msg.speakerLabel), msg.text, msg.isPartial);
   } else if (msg.type === "ENABLE_CAPTIONS") {
     if (captionsPresent()) {
       sendResponse({ enabled: true });
