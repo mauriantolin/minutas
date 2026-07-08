@@ -179,12 +179,15 @@ export function readParticipants(): string[] {
   return [...names];
 }
 
+const SURFACE_TITLE = /^\s*(?:\(\d+\)\s*)?(?:Chat|Calendar|Calendario|Planner|Activity|Actividad|Files|Archivos|Calls|Llamadas|Tasks|Tareas|Home|Inicio|Apps|Aplicaciones|Store|Tienda)\s*\|/i;
+
 export function readMeetingTitle(): string {
   for (const root of roots()) {
     const el = firstMatch(root, SELECTORS.meetingTitle);
-    if (el?.textContent?.trim()) return el.textContent.trim();
+    const text = el?.textContent?.trim();
+    if (text && !SURFACE_TITLE.test(text)) return text;
   }
-  return document.title || "Reunión de Teams";
+  return "Reunión de Teams";
 }
 
 /** Best-effort local user name; the backend also falls back to the JWT name claim. */

@@ -11,6 +11,15 @@ public sealed class CaptureSessionService
     private const string DefaultMeetingTitle = "Meeting with Microsoft Teams";
     private static readonly TimeSpan TitleDetectionWindow = TimeSpan.FromMinutes(10);
 
+    private static readonly HashSet<string> TeamsSurfaces = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Calendar", "Calendario", "Chat", "Planner", "Activity", "Actividad",
+        "Files", "Archivos", "Teams", "Apps", "Aplicaciones", "Store", "Tienda",
+        "Calls", "Llamadas", "Help", "Ayuda", "Tasks", "Tareas", "OneNote",
+        "Shifts", "Turnos", "Wiki", "Viva", "Approvals", "Aprobaciones",
+        "Bookings", "Lists", "Listas", "Whiteboard", "Pizarra", "Home", "Inicio",
+    };
+
     private readonly AppSettings _settings;
     private readonly AppPaths _paths;
     private readonly MeetingsApiClient _api;
@@ -434,8 +443,7 @@ public sealed class CaptureSessionService
     {
         return !string.IsNullOrWhiteSpace(title) &&
             !title.Equals("Microsoft Teams", StringComparison.OrdinalIgnoreCase) &&
-            !title.Equals("Calendar", StringComparison.OrdinalIgnoreCase) &&
-            !title.Equals("Chat", StringComparison.OrdinalIgnoreCase);
+            !IsTeamsSurface(title);
     }
 
     private static string? NormalizeDetectedMeetingTitle(string? title)
@@ -445,18 +453,20 @@ public sealed class CaptureSessionService
             return null;
         }
 
-        if (Regex.IsMatch(
-                Regex.Replace(title.Trim(), @"^WebView2:\s*", "", RegexOptions.IgnoreCase),
-                @"^Chat\s*\|",
-                RegexOptions.IgnoreCase))
-        {
-            return null;
-        }
-
         var value = Regex.Replace(title.Trim(), @"^WebView2:\s*", "", RegexOptions.IgnoreCase);
-        value = Regex.Replace(value, @"^Chat\s*\|\s*", "", RegexOptions.IgnoreCase);
+        value = Regex.Replace(value, @"^Microsoft Teams \(PWA\)\s*-\s*", "", RegexOptions.IgnoreCase);
+        value = Regex.Replace(value, @"^\(\d+\)\s*", "");
         value = Regex.Replace(value, @"\s*\|\s*Microsoft Teams$", "", RegexOptions.IgnoreCase);
-        return value.Trim();
+        value = value.Trim();
+
+        return IsTeamsSurface(value) ? null : value;
+    }
+
+    private static bool IsTeamsSurface(string title)
+    {
+        var separator = title.IndexOf('|');
+        var leading = (separator >= 0 ? title[..separator] : title).Trim();
+        return TeamsSurfaces.Contains(leading);
     }
 
     private static bool IsGenericMeetingTitle(string? title)
