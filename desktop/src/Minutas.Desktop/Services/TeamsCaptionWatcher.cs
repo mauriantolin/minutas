@@ -11,37 +11,27 @@ public sealed class TeamsCaptionWatcher
 {
     private static readonly Regex SpeakerLine = new(@"^(?<name>[^,;:!?()]{2,90})\s+\((?<org>[^)]+)\)$", RegexOptions.Compiled);
 
-    // Short, generic UI labels that could also be spoken words: only an EXACT line match is
-    // treated as chrome so we never swallow speech that merely contains them.
-    private static readonly HashSet<string> ChromeExactBlocklist = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "configuración", "configuracion", "ayuda", "temporizador", "alejar", "acercar",
-        "settings", "help", "zoom", "zoom in", "zoom out",
-    };
+    // Ventana inicial (desde startedAt) durante la cual TODO chunk visible se aprende como chrome:
+    // al arrancar la captura los subtítulos aún no existen, así que lo presente es UI estática.
+    private const double ChromeBaselineWindowSeconds = 3.0;
 
-    // Distinctive Teams control/notification strings that leak into the caption text region.
-    // A candidate line is chrome if it EQUALS or STARTS WITH one of these (full-line prefix,
-    // never a mid-sentence substring), covering the caption toolbar, the "More actions" menu
-    // and live-region announcements in ES + EN.
-    private static readonly string[] ChromePrefixBlocklist =
+    // Un chunk presente de forma continua >= este umbral es UI estática pegada (menú abierto,
+    // roster, etiqueta del tile del hablante). Los subtítulos reales scrollean y desaparecen
+    // mucho antes, así que nunca alcanzan este umbral.
+    private const double ChromePersistenceThresholdSeconds = 15.0;
+
+    // Blocklist residual: SOLO avisos transitorios del sistema que aparecen y desaparecen
+    // demasiado rápido para que baseline/persistencia los aprendan, y que no son habla. Todo lo
+    // demás (menús, toolbars, controles de subtítulos, roster) lo cubre ahora el ChromeSet
+    // aprendido, de forma independiente de nombre/idioma/tenant. Un candidato es chrome si su
+    // línea EMPIEZA con uno de estos prefijos (nunca un substring a mitad de frase).
+    private static readonly string[] ChromeTransientNoticePrefixes =
     {
-        "más acciones", "mas acciones", "más opciones", "mas opciones",
-        "grabar y transcribir", "información de la reunión", "informacion de la reunion",
-        "configuración y efectos de vídeo", "configuracion y efectos de video",
-        "configuración de audio", "configuracion de audio", "idioma y voz",
-        "subtítulos en directo,", "subtitulos en directo,",
-        "subtítulos en vivo,", "subtitulos en vivo,",
-        "ocultar subtítulos", "ocultar subtitulos",
-        "mostrar subtítulos", "mostrar subtitulos",
-        "activar subtítulos", "activar subtitulos", "activar rtt",
+        "compartió pantalla", "compartio pantalla",
+        "ha compartido pantalla", "shared their screen",
+        "el zoom se restableció", "el zoom se restablecio", "zoom reset",
         "se ha iniciado el cierre del título", "se ha iniciado el cierre del titulo",
-        "el zoom se restableció", "el zoom se restablecio",
-        "cambiar tamaño de la galería", "cambiar tamano de la galeria",
-        "ha compartido pantalla en teams",
-        "more actions", "more options", "record and transcribe", "meeting info",
-        "language and speech", "live captions,", "hide live captions",
-        "show live captions", "turn on live captions",
-        "shared their screen", "closed captions started",
+        "closed captions started",
     };
 
     // Caption text lives in Text/Document nodes; menu entries and toolbar/caption controls are
@@ -54,6 +44,14 @@ public sealed class TeamsCaptionWatcher
 
     private readonly AppSettings _settings;
     private readonly Regex _windowTitleRegex;
+
+    // Chrome aprendido por sesión de captura (una reunión). Textos de chunk normalizados
+    // (Normalize: trim + colapso de espacios + lowercase invariante). Se resetea en WatchAsync.
+    private readonly HashSet<string> _chromeSet = new(StringComparer.Ordinal);
+
+    // Instante de la primera aparición CONTINUA de cada chunk normalizado. Un chunk que falta
+    // en un poll se elimina (era transitorio) y su reloj se reinicia si vuelve a aparecer.
+    private readonly Dictionary<string, DateTimeOffset> _chunkFirstSeen = new(StringComparer.Ordinal);
 
     public TeamsCaptionWatcher(AppSettings settings)
     {
@@ -106,11 +104,14 @@ public sealed class TeamsCaptionWatcher
         var initialSnapshotSeeded = false;
         var lastStatusAt = DateTimeOffset.MinValue;
 
+        _chromeSet.Clear();
+        _chunkFirstSeen.Clear();
+
         while (!cancellationToken.IsCancellationRequested)
         {
             var now = DateTimeOffset.UtcNow;
             var elapsed = (now - startedAt).TotalSeconds;
-            var snapshot = ReadSnapshot(elapsed).ToArray();
+            var snapshot = ReadSnapshot(elapsed, now).ToArray();
 
             if (snapshot.Length > 0)
             {
@@ -142,13 +143,17 @@ public sealed class TeamsCaptionWatcher
         PublishPending(ref pending, ref pendingChangedAt);
     }
 
-    private IEnumerable<CaptionObservation> ReadSnapshot(double elapsedSeconds)
+    private IEnumerable<CaptionObservation> ReadSnapshot(double elapsedSeconds, DateTimeOffset now)
     {
         var teamsProcessIds = GetTeamsProcessIds();
-        foreach (var root in GetActiveCaptionRoots(teamsProcessIds))
+        var roots = GetActiveCaptionRoots(teamsProcessIds);
+
+        LearnChrome(roots.SelectMany(root => GetChunks(root.PatternText)), elapsedSeconds, now);
+
+        foreach (var root in roots)
         {
             var chromeControlNames = GetChromeControlNames(root.Element);
-            foreach (var caption in ConvertCandidatesToCaptions(GetCaptionCandidates(root.PatternText), chromeControlNames))
+            foreach (var caption in ConvertCandidatesToCaptions(GetCaptionCandidates(root.PatternText), chromeControlNames, _chromeSet))
             {
                 yield return new CaptionObservation(
                     Math.Round(elapsedSeconds, 3),
@@ -158,6 +163,61 @@ public sealed class TeamsCaptionWatcher
                     root.RootName);
             }
         }
+    }
+
+    // Aprende dos señales dinámicas por poll, independientes de nombre/idioma/tenant:
+    // (1) baseline: durante los primeros segundos todo chunk es UI estática;
+    // (2) persistencia: un chunk continuo por mucho tiempo es UI pegada, no habla.
+    private void LearnChrome(IEnumerable<string> chunks, double elapsedSeconds, DateTimeOffset now)
+    {
+        var present = new HashSet<string>(StringComparer.Ordinal);
+        var inBaseline = elapsedSeconds < ChromeBaselineWindowSeconds;
+
+        foreach (var chunk in chunks)
+        {
+            var normalized = Normalize(chunk);
+            if (normalized.Length == 0)
+            {
+                continue;
+            }
+
+            present.Add(normalized);
+
+            if (inBaseline)
+            {
+                _chromeSet.Add(normalized);
+            }
+        }
+
+        foreach (var normalized in present)
+        {
+            if (!_chunkFirstSeen.TryGetValue(normalized, out var firstSeen))
+            {
+                firstSeen = now;
+                _chunkFirstSeen[normalized] = firstSeen;
+            }
+
+            if ((now - firstSeen).TotalSeconds >= ChromePersistenceThresholdSeconds)
+            {
+                _chromeSet.Add(normalized);
+            }
+        }
+
+        foreach (var stale in _chunkFirstSeen.Keys.Where(key => !present.Contains(key)).ToArray())
+        {
+            _chunkFirstSeen.Remove(stale);
+        }
+    }
+
+    private static IEnumerable<string> GetChunks(string patternText)
+    {
+        return NormalizeText(patternText)
+            .Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+    }
+
+    private static string Normalize(string chunk)
+    {
+        return Regex.Replace(chunk.Trim(), @"\s+", " ").ToLowerInvariant();
     }
 
     private IReadOnlyList<CaptionRootSnapshot> GetActiveCaptionRoots(HashSet<int> teamsProcessIds)
@@ -199,12 +259,20 @@ public sealed class TeamsCaptionWatcher
 
     private static IEnumerable<CaptionDraft> ConvertCandidatesToCaptions(
         IEnumerable<string> candidates,
-        IReadOnlySet<string>? chromeControlNames = null)
+        IReadOnlySet<string>? chromeControlNames = null,
+        IReadOnlySet<string>? chromeSet = null)
     {
         var currentSpeaker = "";
 
         foreach (var candidate in candidates)
         {
+            // Chrome aprendido (baseline + persistencia): se descarta antes de parsear speaker/texto,
+            // así nunca fija currentSpeaker ni se emite.
+            if (chromeSet is not null && chromeSet.Contains(Normalize(candidate)))
+            {
+                continue;
+            }
+
             if (IsCaptionUiLine(candidate))
             {
                 continue;
@@ -250,12 +318,7 @@ public sealed class TeamsCaptionWatcher
             return false;
         }
 
-        if (ChromeExactBlocklist.Contains(value))
-        {
-            return true;
-        }
-
-        foreach (var prefix in ChromePrefixBlocklist)
+        foreach (var prefix in ChromeTransientNoticePrefixes)
         {
             if (value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
             {
