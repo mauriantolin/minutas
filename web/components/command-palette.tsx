@@ -59,7 +59,7 @@ export function CommandPalette({ meetings }: { meetings: Meeting[] | null }) {
             <CommandItem
               key={m.meetingId}
               value={`${m.title} ${m.meetingId}`}
-              onSelect={() => go(`/meeting?id=${m.meetingId}`)}
+              onSelect={() => go(`/meeting?id=${encodeURIComponent(m.meetingId)}`)}
             >
               <CalendarDays />
               <span className="truncate">{m.title}</span>

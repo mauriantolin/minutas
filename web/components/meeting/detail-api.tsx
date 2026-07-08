@@ -110,7 +110,7 @@ export async function patchMeetingRemote(
   body: MeetingPatchBody,
 ): Promise<void> {
   try {
-    await fetch(`${CONFIG.apiUrl}/meetings/${meetingId}`, {
+    await fetch(`${CONFIG.apiUrl}/meetings/${encodeURIComponent(meetingId)}`, {
       method: "PATCH",
       headers: {
         "content-type": "application/json",

@@ -261,7 +261,7 @@ const onSegmentFinal = (segment: DiarizedSegment, senderTabId: number | undefine
         ...(state.captionInflight.length > 0 && { captionTimeline: state.captionInflight }),
         ...(state.signalHealth && { signalHealth: state.signalHealth }),
       };
-      const ok = await api(`/meetings/${state.meetingId}/segments`, body, await getIdToken())
+      const ok = await api(`/meetings/${encodeURIComponent(state.meetingId)}/segments`, body, await getIdToken())
         .then((r) => r.ok)
         .catch(() => false);
       // On failure keep the frozen batch under the same seq for the next due
@@ -313,7 +313,7 @@ async function finalizeMeeting(
 
   for (const delay of FINALIZE_BACKOFF_MS) {
     if (delay) await new Promise((r) => setTimeout(r, delay));
-    const res = await api(`/meetings/${meetingId}/finalize`, record.payload, idToken).catch(
+    const res = await api(`/meetings/${encodeURIComponent(meetingId)}/finalize`, record.payload, idToken).catch(
       () => null,
     );
     if (res?.ok) {

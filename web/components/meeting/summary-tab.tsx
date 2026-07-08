@@ -179,7 +179,7 @@ function claimMatchesText(claim: string, text: string): boolean {
 
 /** Best-effort PATCH (spec §2 delta); localStorage override is the fallback. */
 function patchActionItemDone(token: string, meetingId: string, id: string, done: boolean) {
-  fetch(`${CONFIG.apiUrl}/meetings/${meetingId}`, {
+  fetch(`${CONFIG.apiUrl}/meetings/${encodeURIComponent(meetingId)}`, {
     method: "PATCH",
     headers: {
       "content-type": "application/json",
