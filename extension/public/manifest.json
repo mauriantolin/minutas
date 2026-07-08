@@ -4,7 +4,7 @@
   "short_name": "Minutix",
   "version": "0.1.0",
   "description": "Captura reuniones de Microsoft Teams y sincroniza resúmenes con tu panel Minutix.",
-  "permissions": ["tabCapture", "offscreen", "storage", "scripting", "activeTab", "notifications"],
+  "permissions": ["storage", "scripting", "activeTab", "notifications"],
   "host_permissions": [
     "https://teams.microsoft.com/*",
     "https://*.teams.microsoft.com/*",

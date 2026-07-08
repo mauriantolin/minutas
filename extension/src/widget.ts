@@ -13,9 +13,10 @@ export interface WidgetOptions {
 }
 
 export interface LiveWidget {
-  renderLine(label: string, text: string, isPartial: boolean): void;
-  /** Captions mode: mirror one Teams caption line, keyed by id, refined in place. */
+  /** Mirror one Teams caption line, keyed by id, refined in place. */
   upsertCaption(id: number, label: string, text: string): void;
+  /** Persistent banner above the lines (e.g. "turn on captions"); null hides it. */
+  setNotice(text: string | null): void;
   updateHealth(health: SignalHealth): void;
   destroy(): void;
 }
@@ -130,6 +131,15 @@ const CSS = `
   justify-content: flex-end;
   gap: 8px;
 }
+.notice {
+  flex: none;
+  margin: 8px 12px 0;
+  padding: 6px 8px;
+  border-radius: calc(var(--radius) * 0.6);
+  font-size: 12px;
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--chart-4) 22%, transparent);
+}
 .line { font-size: 14px; line-height: 20px; border-radius: 6px; }
 .line .name { display: block; font-size: 12px; font-weight: 600; }
 .line.interim { color: var(--muted-foreground); font-style: italic; }
@@ -213,6 +223,7 @@ export function mountWidget(opts: WidgetOptions): LiveWidget {
         <button class="iconbtn" id="pause" title="Pausar">⏸</button>
         <button class="iconbtn" id="minimize" title="Minimizar">—</button>
       </div>
+      <div class="notice hidden" id="notice"></div>
       <div class="lines" id="lines"></div>
       <div class="footer">
         ${TAGS.map(
@@ -236,10 +247,8 @@ export function mountWidget(opts: WidgetOptions): LiveWidget {
   const pauseBtn = el("pause") as HTMLButtonElement;
   const quietBtn = el("quiet") as HTMLButtonElement;
 
-  const finals: { label: string; text: string; color: string }[] = [];
-  let interim: { label: string; text: string } | null = null;
-  // Captions mode: a live mirror of the Teams caption pane, keyed by utterance id
-  // (insertion order = Teams order), each line refined in place.
+  // A live mirror of the Teams caption pane, keyed by utterance id (insertion
+  // order = Teams order), each line refined in place.
   const captionLines = new Map<number, { label: string; text: string; color: string }>();
   let paused = false;
   let quiet = false;
@@ -269,15 +278,8 @@ export function mountWidget(opts: WidgetOptions): LiveWidget {
   function render() {
     if (paused) return;
     linesEl.textContent = "";
-    if (captionLines.size) {
-      for (const line of [...captionLines.values()].slice(-MAX_VISIBLE_LINES)) {
-        linesEl.appendChild(lineDiv(line.label, line.text, line.color));
-      }
-    } else {
-      for (const line of finals.slice(-MAX_VISIBLE_LINES)) {
-        linesEl.appendChild(lineDiv(line.label, line.text, line.color));
-      }
-      if (interim) linesEl.appendChild(lineDiv(interim.label, interim.text));
+    for (const line of [...captionLines.values()].slice(-MAX_VISIBLE_LINES)) {
+      linesEl.appendChild(lineDiv(line.label, line.text, line.color));
     }
     linesEl.scrollTop = linesEl.scrollHeight;
   }
@@ -306,7 +308,7 @@ export function mountWidget(opts: WidgetOptions): LiveWidget {
 
   el("copy").addEventListener("click", () => {
     void navigator.clipboard.writeText(
-      finals.map((l) => `${l.label}: ${l.text}`).join("\n"),
+      [...captionLines.values()].map((l) => `${l.label}: ${l.text}`).join("\n"),
     );
   });
 
@@ -326,7 +328,7 @@ export function mountWidget(opts: WidgetOptions): LiveWidget {
 
   for (const btn of root.querySelectorAll<HTMLButtonElement>(".tagbtn")) {
     btn.addEventListener("click", () => {
-      if (finals.length === 0) return;
+      if (captionLines.size === 0) return;
       opts.onTag(btn.dataset.tag as TagId);
       const targets = linesEl.querySelectorAll<HTMLElement>(".line:not(.interim)");
       const target = targets[targets.length - 1];
@@ -362,15 +364,6 @@ export function mountWidget(opts: WidgetOptions): LiveWidget {
   });
 
   return {
-    renderLine(label, text, isPartial) {
-      if (isPartial) {
-        interim = { label, text };
-      } else {
-        finals.push({ label, text, color: colorFor(label) });
-        interim = null;
-      }
-      render();
-    },
     upsertCaption(id, label, text) {
       const prev = captionLines.get(id);
       captionLines.set(id, { label, text, color: prev?.color ?? colorFor(label) });
@@ -380,22 +373,16 @@ export function mountWidget(opts: WidgetOptions): LiveWidget {
       }
       render();
     },
+    setNotice(text) {
+      const noticeEl = el("notice");
+      noticeEl.textContent = text ?? "";
+      noticeEl.classList.toggle("hidden", !text);
+    },
     updateHealth(health) {
       const healthEl = el("health");
-      let cls = "";
-      let title = "Sin señal de la reunión";
-      if (health.asrMode === "rearmed") {
-        cls = "h-amber";
-        title = "Transcripción re-armada";
-      } else if (health.captionsSeen) {
-        cls = "h-green";
-        title = "Subtítulos + audio";
-      } else if (health.speakerRingSeen) {
-        cls = "h-indigo";
-        title = "Audio en streaming (sin subtítulos)";
-      }
+      const cls = health.captionsSeen ? "h-green" : "h-amber";
       healthEl.className = `health ${cls}`;
-      healthEl.title = title;
+      healthEl.title = health.captionsSeen ? "Subtítulos de Teams" : "Esperando subtítulos";
     },
     destroy() {
       window.clearInterval(timer);
