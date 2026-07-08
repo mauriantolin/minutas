@@ -5,8 +5,10 @@ namespace Minutas.Desktop;
 
 internal static class Program
 {
+    private const string MinimizedArgument = "--minimized";
+
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         var settings = AppSettings.Default;
         var appData = AppPaths.Create();
@@ -16,14 +18,24 @@ internal static class Program
         var api = new MeetingsApiClient(settings, auth, httpClient);
         var captions = new TeamsCaptionWatcher(settings);
         var recorder = new CaptureSessionService(settings, appData, api, captions);
-        var captionEnabler = new TeamsCaptionEnabler(captions);
+        var startup = new WindowsStartupService();
+        var preferences = new DesktopPreferencesService(appData);
         var presence = new MeetingPresenceWatcher(captions);
+        var startMinimized = args.Any(arg => string.Equals(arg, MinimizedArgument, StringComparison.OrdinalIgnoreCase));
 
         var app = new System.Windows.Application
         {
             ShutdownMode = System.Windows.ShutdownMode.OnExplicitShutdown
         };
 
-        app.Run(new MainWindow(settings, auth, api, recorder, captionEnabler, presence));
+        var window = new MainWindow(settings, auth, api, recorder, startup, preferences, presence);
+        app.MainWindow = window;
+        app.Startup += async (_, _) => await window.InitializeAsync();
+        if (!startMinimized)
+        {
+            window.Show();
+        }
+
+        app.Run();
     }
 }

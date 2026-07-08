@@ -195,12 +195,6 @@ async function startCapture(opts: StartCaptureOpts = {}): Promise<{
   // Start failure is tolerated (offline start): finalize upserts by captureId later.
   const meetingId = await registerMeeting(captureId, meetingMeta, idToken);
   await saveCaptureMeta({ captureId, meetingId, ...meetingMeta });
-  // Captions absent → best-effort programmatic enable; capture proceeds regardless
-  // (the caption observer picks the pane up whenever it appears, and the content
-  // watchdog keeps retrying the enable while the meeting is live).
-  if (!captionsDetected) {
-    void chrome.tabs.sendMessage(tabId, { type: "ENABLE_CAPTIONS" }).catch(() => {});
-  }
   await writeState({
     activeTabId: tabId,
     captureId,

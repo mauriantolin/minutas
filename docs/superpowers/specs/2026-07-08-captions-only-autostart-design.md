@@ -1,7 +1,7 @@
-# Captions de Teams como única fuente + auto-encendido + auto-arranque
+# Captions de Teams como única fuente + auto-arranque
 
 **Fecha:** 2026-07-08
-**Estado:** aprobado, en implementación
+**Estado:** actualizado: auto-encendido descartado
 
 ## Problema
 
@@ -16,26 +16,26 @@ formas distintas:
    Transcribe.
 
 El usuario quiere **una sola forma de interpretar el audio: los live captions de Teams**.
-Además, al entrar a una reunión los subtítulos deben **encenderse solos** y la
-transcripción debe **arrancar sola**. Debe comportarse igual en la extensión (Teams web)
-y en la app de escritorio `desktop/` (WPF, lee Teams de escritorio por UI Automation).
+Además, al entrar a una reunión la transcripción debe **arrancar sola** cuando la opción
+de captura automática está activa. Minutix no activa subtítulos automáticamente: el
+usuario debe configurar Teams para mostrarlos siempre.
 
 Estado medido antes del cambio:
 
 | Requisito | Extensión | Desktop |
 |---|---|---|
 | A. Solo captions | ❌ raw fallback vivo (default del Start manual) | ✅ ya captions-only |
-| B. Auto-encender captions | ✅ `enableCaptions()` | ❌ solo lee por UIA |
+| B. Subtítulos siempre activos | Guía al usuario | Guía al usuario |
 | C. Auto-arrancar al entrar | ✅ `observeMeetingPresence` | ❌ solo botón manual |
 
 ## Decisiones
 
 - Raw fallback de audio en la extensión: **eliminar por completo** (archivos, permisos,
   consent tiers, micrófono).
-- Si Teams no logra activar los subtítulos: **avisar y seguir intentando**, nunca caer a
-  audio. Captions es la única fuente.
-- Desktop auto-encendido: **UIA best-effort** (navegar Más → Idioma y voz → Activar
-  subtítulos con `InvokePattern`) + aviso persistente de backstop.
+- Si Teams no tiene subtítulos visibles: **avisar al usuario**, nunca caer a audio y no
+  intentar tocar menús de Teams. Captions es la única fuente.
+- Guía recomendada: Teams → Configuración → Accesibilidad → Subtítulos → activar
+  “Siempre mostrar subtítulos en mis llamadas y reuniones”.
 - Botón *Start* manual: **se mantiene** en ambos, pero en modo captions (red de
   seguridad si el auto-detect no dispara).
 - **Backend sin cambios.** Los segmentos caption ya fluyen; los endpoints de audio/tier-2
@@ -68,29 +68,21 @@ Estado medido antes del cambio:
   ligado al audio store si aplica.
 
 ### Sin captions (backstop)
-`widget.ts` gana una mini-API `setNotice(text|null)` para un banner persistente. En
-`content.ts`, si tras `enableCaptions()` los captions siguen ausentes, se muestra
-"Activá los subtítulos de Teams para transcribir" y se reintenta el enable en background
-mientras la reunión siga viva.
+`widget.ts` expone `setNotice(text|null)` para un banner persistente. En `content.ts`,
+si los captions siguen ausentes, se muestra una instrucción para activar subtítulos desde
+Teams. La extensión no intenta activar subtítulos automáticamente.
 
 ## Parte B — Desktop (WPF / UIA / Teams de escritorio)
 
-Ya es captions-only. Se agrega:
-
-### Auto-encender captions (nuevo)
-`TeamsCaptionEnabler` (o método en `TeamsCaptionWatcher`): ubica la ventana de la llamada
-de Teams y navega **Más opciones → Idioma y voz → Activar subtítulos en vivo** clickeando
-con `InvokePattern`/`LegacyIAccessible`, con reintentos (best-effort, espeja
-`enableCaptions()` de la extensión). Si no lo logra, `StatusChanged` con aviso persistente
-"Activá los subtítulos de Teams" y sigue reintentando + leyendo. Se dispara al iniciar la
-captura.
+Ya es captions-only. Minutix Desktop no toca menús de Teams: lee subtítulos cuando Teams
+los expone por UI Automation.
 
 ### Auto-arranque por presencia (nuevo)
 `MeetingPresenceWatcher`: poll UIA (~2 s) que detecta una llamada activa de Teams
 (presencia del control **Leave**/hangup o de la ventana de llamada) con debounce
 join≈3 s / leave≈8 s (espeja `observeMeetingPresence`). En *join* → si hay sesión, la
-captura automática está ON y no hay captura en curso, invoca `CaptureSessionService.StartAsync`
-+ el encendido de captions. En *leave* → `StopAsync` solo si la captura fue auto-iniciada.
+captura automática está ON y no hay captura en curso, invoca `CaptureSessionService.StartAsync`.
+En *leave* → `StopAsync` solo si la captura fue auto-iniciada.
 
 ### Setting + UI
 `AppSettings.AutoCapture` (default ON) + toggle en `MainWindow`. Sin sesión al detectar
@@ -107,7 +99,7 @@ Sin cambios de backend. `signalHealth.asrMode`: extensión `"captions-primary"`,
 - **Desktop**: WPF `net10.0-windows`; no hay `dotnet` en el entorno Linux de desarrollo.
   La compilación real es el **gate de CI** (`deploy.yml`, ubuntu + dotnet 10 +
   `EnableWindowsTargeting`, `Publish-MinutasDesktop.ps1 -Runtime win-x64`). La prueba de
-  UIA (auto-encendido/auto-arranque) se corre en Windows.
+  UIA (auto-arranque y lectura de subtítulos) se corre en Windows.
 
 ## Deploy
 Push a `main` dispara `.github/workflows/deploy.yml` (OIDC): CDK infra → build extensión

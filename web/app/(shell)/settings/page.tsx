@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
-import { Download, LogOut, Pencil, Plus, Trash2 } from "lucide-react";
+import { Download, Info, LogOut, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -250,6 +250,31 @@ export default function SettingsPage() {
               <LogOut />
               Salir
             </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">Requisito para capturar</CardTitle>
+            <CardDescription>
+              Minutix lee los subtítulos de Teams. Sin subtítulos activos, la extensión y la
+              app Windows no tienen transcripción para capturar.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex gap-3 rounded-md border bg-muted/40 p-3 text-sm">
+              <Info className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <p className="text-muted-foreground">
+                En Teams vas a{" "}
+                <span className="font-medium text-foreground">Configuración</span> →{" "}
+                <span className="font-medium text-foreground">Accesibilidad</span> →{" "}
+                <span className="font-medium text-foreground">Subtítulos</span> → activar{" "}
+                <span className="font-medium text-foreground">
+                  Siempre mostrar subtítulos en mis llamadas y reuniones
+                </span>
+                .
+              </p>
+            </div>
           </CardContent>
         </Card>
 

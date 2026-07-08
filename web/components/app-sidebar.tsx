@@ -53,7 +53,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/components/auth-provider";
-import { APP_NAME } from "@/lib/config";
 import { initials } from "@/lib/format";
 import { getLabelDefs, setLabelDefs, type LabelDef } from "@/lib/overrides";
 import type { Meeting } from "@/lib/api";
@@ -94,9 +93,12 @@ export function AppSidebar({ meetings }: { meetings: Meeting[] | null }) {
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
-        <div className="flex h-8 items-center gap-2 px-2 font-semibold tracking-tight group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
-          <img src="/minutix-mark.png" alt="" className="size-6 shrink-0" />
-          <span className="group-data-[collapsible=icon]:hidden">{APP_NAME}</span>
+        <div className="flex h-8 items-center px-2 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
+          <img
+            src="/minutix-logo.png"
+            alt="Minutix"
+            className="h-7 w-auto max-w-32 object-contain group-data-[collapsible=icon]:h-5 group-data-[collapsible=icon]:w-6 group-data-[collapsible=icon]:max-w-none"
+          />
         </div>
       </SidebarHeader>
       <SidebarContent>

@@ -2,8 +2,7 @@
  * ISOLATED, FRAGILE MODULE. Everything that depends on the Teams PWA markup lives here so
  * that when Microsoft changes the DOM, only this file needs patching. Keep the public API
  * (readActiveSpeaker, readParticipants, readMeetingTitle, readLocalUserName,
- * captionsPresent, observeCaptions, meetingPresent, observeMeetingPresence,
- * enableCaptions) stable.
+ * captionsPresent, observeCaptions, meetingPresent, observeMeetingPresence) stable.
  *
  * Selector provenance (v2 client, teams.microsoft.com — cross-checked against actively
  * maintained scrapers: Vexa "verified 2026-03", Zerg00s/Live-Captions-Saver 2026-02,
@@ -74,18 +73,10 @@ const SELECTORS = {
     '[aria-label*="Leave"]',
     '[aria-label*="Hang up"]',
   ],
-  // Documented menu path to turn live captions on programmatically.
-  moreButton: ['button[data-tid="more-button"]', "#callingButtons-showMoreBtn"],
-  languageSpeechMenu: ["#LanguageSpeechMenuControl-id"],
-  captionsToggle: ["#closed-captions-button"],
 };
 
 // Accessible-name fallbacks (ES/EN). UIA Name == DOM accessible name, so these strings
 // come straight from a real v2 meeting dump and match aria-label/title/text.
-const CAPTIONS_ON_NAMES = ["ocultar subtítulos", "ocultar subtitulos", "hide live captions", "hide captions"];
-const TURN_ON_NAMES = ["activar subtítulos", "activar subtitulos", "turn on live captions", "turn on captions", "mostrar subtítulos", "mostrar subtitulos", "show live captions", "show captions"];
-const MORE_MENU_NAMES = ["más opciones", "mas opciones", "more options", "more call options", "más", "more"];
-const LANGUAGE_MENU_NAMES = ["idioma y voz", "idioma y habla", "language and speech", "language & speech"];
 const CAPTION_PANE_NAMES = ["subtítulos en directo", "subtitulos en directo", "live captions"];
 
 // A caption line superseded by a newer one gets this grace to absorb its last
@@ -230,47 +221,6 @@ export function captionsPresent(): boolean {
       const label = (el.getAttribute("aria-label") ?? "").trim().toLowerCase();
       if (label && CAPTION_PANE_NAMES.some((n) => label.includes(n))) return true;
     }
-  }
-  return false;
-}
-
-function accessibleName(el: Element): string {
-  return (
-    el.getAttribute("aria-label") ||
-    (el as HTMLElement).title ||
-    el.textContent ||
-    ""
-  )
-    .trim()
-    .toLowerCase();
-}
-
-function findByName(root: ParentNode, needles: string[]): HTMLElement | null {
-  const els = root.querySelectorAll<HTMLElement>(
-    "button, [role='button'], [role='menuitem'], [role='menuitemcheckbox'], [role='menuitemradio'], [aria-label], [title]",
-  );
-  for (const el of els) {
-    const label = accessibleName(el);
-    if (label && needles.some((n) => label.includes(n))) return el;
-  }
-  return null;
-}
-
-function clickByName(needles: string[]): boolean {
-  for (const root of roots()) {
-    const el = findByName(root, needles);
-    if (el) {
-      el.click();
-      return true;
-    }
-  }
-  return false;
-}
-
-/** ON when the UI exposes an "Ocultar subtítulos"/"Hide captions" affordance. */
-function captionsAlreadyOn(): boolean {
-  for (const root of roots()) {
-    if (findByName(root, CAPTIONS_ON_NAMES)) return true;
   }
   return false;
 }
@@ -459,66 +409,3 @@ export function observeMeetingPresence(onJoin: () => void, onLeave: () => void):
   return () => window.clearInterval(timer);
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-function clickFirst(selectors: string[]): boolean {
-  for (const root of roots()) {
-    const el = firstMatch(root, selectors);
-    if (el instanceof HTMLElement) {
-      el.click();
-      return true;
-    }
-  }
-  return false;
-}
-
-async function tryEnableCaptionsOnce(): Promise<boolean> {
-  try {
-    if (captionsAlreadyOn()) return true;
-    if (!clickFirst(SELECTORS.moreButton) && !clickByName(MORE_MENU_NAMES)) return false;
-    await sleep(600);
-    if (!clickFirst(SELECTORS.languageSpeechMenu) && !clickByName(LANGUAGE_MENU_NAMES))
-      return false;
-    await sleep(600);
-    if (captionsAlreadyOn()) return true;
-    if (!clickFirst(SELECTORS.captionsToggle) && !clickByName(TURN_ON_NAMES)) return false;
-    await sleep(2000);
-    return captionsAlreadyOn() || captionsPresent();
-  } finally {
-    for (const root of roots()) {
-      root.body?.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }),
-      );
-    }
-  }
-}
-
-/**
- * Best-effort programmatic captions enable via the in-call menu:
- * More → Language and speech → Turn on live captions. Retried a few times because
- * the call toolbar/menu mounts a beat after join; the menu is closed (Escape) each
- * attempt. Verified with captionsPresent().
- */
-export async function enableCaptions(): Promise<boolean> {
-  if (captionsAlreadyOn() || captionsPresent()) return true;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    if (captionsAlreadyOn() || captionsPresent()) return true;
-    if (await tryEnableCaptionsOnce()) return true;
-    await sleep(1500);
-  }
-  if (captionsAlreadyOn() || captionsPresent()) return true;
-  // Last resort: the Alt+Shift+C chord toggles captions, so only fire it while still OFF.
-  if (!captionsAlreadyOn()) {
-    document.body.dispatchEvent(
-      new KeyboardEvent("keydown", {
-        key: "C",
-        code: "KeyC",
-        altKey: true,
-        shiftKey: true,
-        bubbles: true,
-      }),
-    );
-    await sleep(1500);
-  }
-  return captionsAlreadyOn() || captionsPresent();
-}
