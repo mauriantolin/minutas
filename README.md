@@ -77,7 +77,7 @@ El deploy de GitHub Actions genera automáticamente los descargables servidos de
 Configuración:
 
 - `web/public/minutix-extension.zip`
-- `web/public/minutix-desktop-win-x64.zip`
+- `web/public/desktop/` (feed Velopack: `Minutix.Desktop-win-Setup.exe` + `releases.win.json` + `.nupkg`)
 
 ## Probar end-to-end — 2 prerequisitos
 

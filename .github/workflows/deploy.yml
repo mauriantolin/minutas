@@ -19,8 +19,58 @@ env:
   STACK_NAME: TeamsAgentCore
 
 jobs:
+  # vpk packages for the host OS only: `vpk pack` on Linux reads the win-x64 exe
+  # as an ELF and fails, so the Windows Setup.exe + feed must be built on Windows.
+  # The feed is uploaded as an artifact and injected into web/public/desktop by the
+  # deploy job before the static export, so it ships to S3/CloudFront under /desktop.
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install Velopack CLI (vpk)
+        shell: pwsh
+        run: |
+          dotnet tool install -g vpk --version 1.2.0
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Publish desktop app
+        run: >
+          dotnet publish desktop/src/Minutas.Desktop/Minutas.Desktop.csproj
+          -c Release -r win-x64 --self-contained true
+          -o desktop/publish/win-x64
+
+      - name: Package with Velopack
+        run: >
+          vpk pack
+          --packId Minutix.Desktop
+          --packVersion 1.0.${{ github.run_number }}
+          --packDir desktop/publish/win-x64
+          --mainExe Minutix.Desktop.exe
+          --packTitle "Minutix Desktop"
+          -o web/public/desktop
+
+      # Pin the installer name so the Settings download link is stable across builds.
+      - name: Normalize installer name
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem web/public/desktop -Filter *Setup.exe | Select-Object -First 1
+          if ($setup.Name -ne 'Minutix.Desktop-win-Setup.exe') {
+            Rename-Item $setup.FullName 'Minutix.Desktop-win-Setup.exe'
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-feed
+          path: web/public/desktop
+
   deploy:
     runs-on: ubuntu-latest
+    needs: desktop
     steps:
       - uses: actions/checkout@v4
 
@@ -60,18 +110,17 @@ jobs:
           echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
           echo "distribution=$DIST" >> "$GITHUB_OUTPUT"
 
-      # The extension and desktop builds package web/public downloads, so they
-      # must run before the web export. The zips are gitignored and generated
-      # fresh for the Configuración page on every deploy.
+      # The extension build and the desktop feed populate web/public downloads, so
+      # they must land before the web export. Both are gitignored and produced fresh
+      # for the Configuración page on every deploy.
       - name: Build extension
         run: npm run build -w @teams-agent-core/extension
 
-      - name: Build desktop app
-        shell: pwsh
-        run: |
-          ./desktop/tools/Publish-MinutasDesktop.ps1 `
-            -Runtime win-x64 `
-            -PackageOutputPath ./web/public/minutix-desktop-win-x64.zip
+      - name: Download desktop feed
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-feed
+          path: web/public/desktop
 
       - name: Build web (static export)
         run: npm run build -w @teams-agent-core/web

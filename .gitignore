@@ -19,6 +19,10 @@ web/out/
 extension/dist/
 *.zip
 
+# Velopack desktop update feed (generated in CI)
+web/public/desktop/
+desktop/publish/
+
 # Claude local overrides
 .claude/settings.local.json
 

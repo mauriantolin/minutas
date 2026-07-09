@@ -301,15 +301,16 @@ export default function SettingsPage() {
           <CardHeader>
             <CardTitle className="text-sm font-medium">Aplicación Windows</CardTitle>
             <CardDescription>
-              Descargá Minutix Desktop para capturar subtítulos en vivo desde Teams Desktop.
-              Funciona con la ventana minimizada y no graba audio.
+              Instalá Minutix Desktop una sola vez: el instalador se encarga del resto y la app
+              se actualiza sola en cada arranque. Captura subtítulos en vivo desde Teams Desktop,
+              funciona con la ventana minimizada y no graba audio.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <Button asChild>
-              <a href="/minutix-desktop-win-x64.zip" download>
+              <a href="/desktop/Minutix.Desktop-win-Setup.exe" download>
                 <Download />
-                Descargar app Windows
+                Descargar instalador
               </a>
             </Button>
           </CardContent>
