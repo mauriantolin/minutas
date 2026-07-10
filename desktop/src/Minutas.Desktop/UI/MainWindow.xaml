@@ -194,6 +194,8 @@
             <Setter Property="Width" Value="48" />
             <Setter Property="Height" Value="28" />
             <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="ToolTipService.InitialShowDelay" Value="250" />
+            <Setter Property="ToolTipService.ShowDuration" Value="20000" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="CheckBox">
@@ -644,7 +646,9 @@
                                Margin="6,0,0,0"
                                VerticalAlignment="Center"
                                Cursor="Hand"
-                               ToolTip="{Binding Text, ElementName=AutoCaptureHintText}" />
+                               ToolTipService.InitialShowDelay="250"
+                               ToolTipService.ShowDuration="20000"
+                               ToolTip="Arranca la captura al detectar una reunión de Teams Desktop." />
                     <TextBlock x:Name="AutoCaptureHintText"
                                Visibility="Collapsed"
                                Text="Detecta una llamada de Teams Desktop y empieza a transcribir." />
@@ -670,7 +674,9 @@
                                Margin="6,0,0,0"
                                VerticalAlignment="Center"
                                Cursor="Hand"
-                               ToolTip="{Binding Text, ElementName=HighFidelityHintText}" />
+                               ToolTipService.InitialShowDelay="250"
+                               ToolTipService.ShowDuration="20000"
+                               ToolTip="Teams expone cada subtítulo con su autor exacto, desde el inicio de Windows. Reversible. También afecta a otras apps WebView2 (Outlook nuevo, Widgets)." />
                     <TextBlock x:Name="HighFidelityHintText"
                                Visibility="Collapsed"
                                Text="Teams expone cada subtítulo con su autor exacto, desde el inicio de Windows. Reversible. También afecta a otras apps WebView2 (Outlook nuevo, Widgets)." />
@@ -703,7 +709,9 @@
                                Margin="6,0,0,0"
                                VerticalAlignment="Center"
                                Cursor="Hand"
-                               ToolTip="{Binding Text, ElementName=StartupHintText}" />
+                               ToolTipService.InitialShowDelay="250"
+                               ToolTipService.ShowDuration="20000"
+                               ToolTip="Minutix se abre solo con Windows, minimizado en la bandeja." />
                     <TextBlock x:Name="StartupHintText"
                                Visibility="Collapsed"
                                Text="Se abre minimizado en la bandeja." />

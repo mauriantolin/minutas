@@ -29,6 +29,8 @@ public static class ThemeManager
         }
     }
 
+    private static bool? _appliedLight;
+
     private static void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
     {
         if (e.Category != UserPreferenceCategory.General)
@@ -38,7 +40,11 @@ public static class ThemeManager
 
         try
         {
-            _app?.Dispatcher.Invoke(ApplyCurrent);
+            // Async + no-op guard: a "General" broadcast also fires for unrelated changes
+            // (e.g. setting a user env var when toggling high fidelity). Rebuilding the
+            // whole resource dictionary there froze the UI, so only touch it when the OS
+            // theme actually flipped, and never block the toggling thread.
+            _app?.Dispatcher.BeginInvoke(new Action(ApplyCurrent));
         }
         catch
         {
@@ -55,10 +61,17 @@ public static class ThemeManager
 
         try
         {
-            var uri = new Uri(IsLightTheme() ? LightThemeUri : DarkThemeUri, UriKind.Absolute);
+            var light = IsLightTheme();
+            if (_appliedLight == light)
+            {
+                return;
+            }
+
+            var uri = new Uri(light ? LightThemeUri : DarkThemeUri, UriKind.Absolute);
             var dictionary = new ResourceDictionary { Source = uri };
             app.Resources.MergedDictionaries.Clear();
             app.Resources.MergedDictionaries.Add(dictionary);
+            _appliedLight = light;
         }
         catch
         {
