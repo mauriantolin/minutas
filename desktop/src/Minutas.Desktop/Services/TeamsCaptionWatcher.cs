@@ -149,6 +149,24 @@ public sealed class TeamsCaptionWatcher
 
         foreach (var root in roots)
         {
+            // Camino preferido: el renderer expone cada subtitulo como nodos UIA discretos
+            // (autor + texto). No necesita chrome learning ni parseo del blob plano, y es
+            // independiente de nombre, organizacion, idioma y tenant.
+            if (root.StructuralCaptions.Count > 0)
+            {
+                foreach (var caption in root.StructuralCaptions)
+                {
+                    yield return new CaptionObservation(
+                        Math.Round(elapsedSeconds, 3),
+                        caption.Speaker,
+                        caption.Text,
+                        root.IsOffscreen,
+                        root.RootName);
+                }
+
+                continue;
+            }
+
             var chromeControlNames = GetChromeControlNames(root.Element);
             foreach (var caption in ConvertCandidatesToCaptions(GetCaptionCandidates(root.PatternText), chromeControlNames, _chromeSet))
             {
@@ -159,6 +177,95 @@ public sealed class TeamsCaptionWatcher
                     root.IsOffscreen,
                     root.RootName);
             }
+        }
+    }
+
+    // Con el AXMode completo del renderer, el panel de subtitulos aparece como:
+    //   Group  <contenedor>
+    //     Group            <- lista
+    //       Group          <- un enunciado
+    //         Text  autor
+    //         Group badge  (opcional: "Desconocido externo")
+    //         Text  texto
+    //     Button aid=closed-captions-pop-out-button
+    //     Button aid=captions-panel-dismiss-button
+    //     Button aid=captions-settings-menu-trigger-button-non-overflow
+    // Los nodos de subtitulo tienen AutomationId vacio, pero los botones hermanos NO: ese
+    // AutomationId es el ancla estable (no depende de idioma ni de tenant). Si el renderer no
+    // esta en AXMode completo no hay nodos y devolvemos vacio -> el llamador cae al parser plano.
+    private static IReadOnlyList<CaptionDraft> GetStructuralCaptions(AutomationElement root)
+    {
+        var buttons = Safe(
+            () => root.FindAll(
+                TreeScope.Descendants,
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button))
+                .Cast<AutomationElement>().ToArray(),
+            Array.Empty<AutomationElement>());
+
+        foreach (var button in buttons)
+        {
+            var automationId = Safe(() => button.Current.AutomationId, "");
+            if (automationId.IndexOf("captions", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                continue;
+            }
+
+            var container = Safe(() => TreeWalker.RawViewWalker.GetParent(button), null);
+            if (container is null)
+            {
+                continue;
+            }
+
+            var captions = ExtractCaptionItems(container);
+            if (captions.Count > 0)
+            {
+                return captions;
+            }
+        }
+
+        return Array.Empty<CaptionDraft>();
+    }
+
+    private static IReadOnlyList<CaptionDraft> ExtractCaptionItems(AutomationElement container)
+    {
+        var groups = Safe(
+            () => container.FindAll(
+                TreeScope.Descendants,
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Group))
+                .Cast<AutomationElement>().ToArray(),
+            Array.Empty<AutomationElement>());
+
+        var items = new List<CaptionDraft>();
+        foreach (var group in groups)
+        {
+            // Un enunciado es el unico Group con >= 2 Text hijos directos (autor y texto).
+            // El badge es un Group sin Text hijos, y la lista solo contiene Groups.
+            var texts = GetChildren(group)
+                .Where(child => Safe(() => child.Current.ControlType == ControlType.Text, false))
+                .Select(child => Safe(() => child.Current.Name, "").Trim())
+                .Where(name => name.Length > 0)
+                .ToArray();
+
+            if (texts.Length < 2)
+            {
+                continue;
+            }
+
+            items.Add(new CaptionDraft(texts[0], texts[^1]));
+        }
+
+        return items;
+    }
+
+    private static IEnumerable<AutomationElement> GetChildren(AutomationElement element)
+    {
+        var walker = TreeWalker.RawViewWalker;
+        var child = Safe(() => walker.GetFirstChild(element), null);
+        while (child is not null)
+        {
+            yield return child;
+            var current = child;
+            child = Safe(() => walker.GetNextSibling(current), null);
         }
     }
 
@@ -252,7 +359,10 @@ public sealed class TeamsCaptionWatcher
                 var patternText = GetTextFromElement(rootWebArea);
                 var isCaptionsWindow = IsCaptionsWindowTitle(windowName) || IsCaptionsWindowTitle(rootName);
                 var isMeetingSurface = IsMeetingSurface(patternText);
-                var hasCaptions = IsCaptionLikeText(patternText);
+                var structuralCaptions = GetStructuralCaptions(rootWebArea);
+                // Los nodos estructurales tambien valen como senal de "hay subtitulos": asi el
+                // root sobrevive aunque el blob plano no parsee (invitado sin "(Org)", otro idioma).
+                var hasCaptions = structuralCaptions.Count > 0 || IsCaptionLikeText(patternText);
                 var captionsUiVisible = ContainsCaptionChrome(patternText);
                 var meetingEnded = IsMeetingEndedText(patternText);
 
@@ -266,7 +376,7 @@ public sealed class TeamsCaptionWatcher
                 }
 
                 var score = GetCaptionRootScore(rootName, windowName, patternText, isOffscreen, isCaptionsWindow);
-                roots.Add(new CaptionRootSnapshot(rootWebArea, window, patternText, rootName, windowName, isOffscreen, score, isMeetingSurface, isCaptionsWindow, hasCaptions, captionsUiVisible, meetingEnded));
+                roots.Add(new CaptionRootSnapshot(rootWebArea, window, patternText, rootName, windowName, isOffscreen, score, isMeetingSurface, isCaptionsWindow, hasCaptions, captionsUiVisible, meetingEnded, structuralCaptions));
             }
         }
         return roots;
@@ -1177,7 +1287,8 @@ public sealed class TeamsCaptionWatcher
         bool IsCaptionsWindow,
         bool HasCaptions,
         bool CaptionsUiVisible,
-        bool MeetingEnded);
+        bool MeetingEnded,
+        IReadOnlyList<CaptionDraft> StructuralCaptions);
 
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 

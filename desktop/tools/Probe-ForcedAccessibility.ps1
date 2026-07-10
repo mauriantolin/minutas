@@ -95,6 +95,44 @@ function Get-PatternText {
 $records = New-Object System.Collections.Generic.List[object]
 $count = 0
 
+# Mirrors TeamsCaptionWatcher.GetStructuralCaptions — keep the two in sync.
+function Get-StructuralCaptions {
+  param([System.Windows.Automation.AutomationElement]$Root)
+  $btnCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Button)
+  $grpCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Group)
+  $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+  $buttons = Invoke-Safe { $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) } $null
+  if ($null -eq $buttons) { return @() }
+  foreach ($b in $buttons) {
+    $aid = Invoke-Safe { $b.Current.AutomationId } ""
+    if ($aid -notmatch "captions") { continue }
+    $container = Invoke-Safe { $walker.GetParent($b) } $null
+    if ($null -eq $container) { continue }
+    $groups = Invoke-Safe { $container.FindAll([System.Windows.Automation.TreeScope]::Descendants, $grpCond) } $null
+    if ($null -eq $groups) { continue }
+    $items = @()
+    foreach ($g in $groups) {
+      $texts = @()
+      $c = Invoke-Safe { $walker.GetFirstChild($g) } $null
+      while ($null -ne $c) {
+        $isText = Invoke-Safe { $c.Current.ControlType -eq [System.Windows.Automation.ControlType]::Text } $false
+        if ($isText) {
+          $n = Invoke-Safe { $c.Current.Name } ""
+          if (-not [string]::IsNullOrWhiteSpace($n)) { $texts += $n.Trim() }
+        }
+        $c = Invoke-Safe { $walker.GetNextSibling($c) } $null
+      }
+      if ($texts.Count -ge 2) { $items += [pscustomobject]@{ controlType = "CaptionItem"; name = ("{0}: {1}" -f $texts[0], $texts[-1]) } }
+    }
+    if ($items.Count -gt 0) { return $items }
+  }
+  return @()
+}
+
 function Walk {
   param([System.Windows.Automation.AutomationElement]$El, [int]$Depth)
   if ($script:count -ge $MaxElements -or $Depth -gt $MaxDepth) { return }
@@ -135,14 +173,15 @@ try {
     Walk -El $item.Area -Depth 0
     $pt = Get-PatternText $item.Area
 
-    # A caption line in the flat blob looks like "<something> <something>" inside a U+FFFC chunk.
-    # STRUCTURAL means: descendants exist whose OWN Name carries that text.
+    # STRUCTURAL means the caption pane exposes one discrete subtree per utterance. We run the
+    # SAME algorithm the app uses: anchor on the sibling Button whose AutomationId contains
+    # "captions" (stable, locale/tenant independent), take its parent, then collect descendant
+    # Groups having >=2 direct Text children (author ... text).
+    # Do NOT score on "nodes with >=3 words" — chrome labels ("Controles de llamada") match that.
     $named = @($records | Where-Object { $_.depth -gt 0 -and -not [string]::IsNullOrWhiteSpace($_.name) })
-    $textNodes = @($named | Where-Object { $_.controlType -match "Text|Document|Group" })
-    # a caption-ish node: >2 words, not a button/menu label
-    $captionish = @($textNodes | Where-Object { ($_.name -split '\s+').Count -ge 3 })
+    $captionish = @(Get-StructuralCaptions $item.Area)
 
-    $verdict = if ($captionish.Count -ge 3) { "STRUCTURAL" } elseif ($named.Count -le 5) { "FLAT" } else { "PARTIAL" }
+    $verdict = if ($captionish.Count -ge 1) { "STRUCTURAL" } elseif ($named.Count -le 5) { "FLAT" } else { "PARTIAL" }
     $verdicts += $verdict
 
     foreach ($r in $records) {
