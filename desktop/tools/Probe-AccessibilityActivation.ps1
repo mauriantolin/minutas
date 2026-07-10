@@ -43,12 +43,19 @@ $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
-if ($env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -or
-  [Environment]::GetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "User")) {
-  Write-Host "WARNING: WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS is still set." -ForegroundColor Red
-  Write-Host "         Results will NOT represent a fresh client install. Clear it, restart Teams, rerun." -ForegroundColor Red
+# Only the PERSISTED (User) var matters: that is what a freshly started Teams inherits. This
+# PowerShell session's own $env: copy is irrelevant here (we never launch Teams) and warning on
+# it produced a false alarm.
+if ([Environment]::GetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "User")) {
+  Write-Host "WARNING: the persisted WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS is still set." -ForegroundColor Red
+  Write-Host "         Clear it, restart Teams, rerun. Otherwise you measure the forced path." -ForegroundColor Red
   Write-Host ""
 }
+
+# Objective evidence of whether Teams was restarted after the var was cleared.
+Get-Process -Name "ms-teams", "msteams" -ErrorAction SilentlyContinue |
+Sort-Object StartTime | Select-Object -First 1 |
+ForEach-Object { Write-Host ("Teams process started at: {0}" -f $_.StartTime) -ForegroundColor DarkGray }
 
 Add-Type @"
 using System;
@@ -180,21 +187,57 @@ function Get-MeetingRoots {
     if ($null -eq $areas) { continue }
     foreach ($a in $areas) { $out += [pscustomobject]@{ Window = $n; Hwnd = $hwnd; Area = $a } }
   }
-  return $out
+  return , @($out)   # comma keeps it an array even with 0/1 elements, so .Count is never $null
+}
+
+# POSITIVE CONTROL. Without it, "0 caption nodes" is ambiguous: it could mean the AXMode never
+# escalated, OR simply that no captions were on screen. The captions pane is proven open when a
+# Button whose AutomationId contains "captions" exists (locale/tenant independent). And the flat
+# patternText tells us whether Teams is actually rendering caption lines right now.
+function Get-PaneState {
+  param([System.Windows.Automation.AutomationElement]$Root)
+  $btnCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
+  $buttons = Invoke-Safe { $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) } $null
+  $pane = $false
+  if ($null -ne $buttons) {
+    foreach ($b in $buttons) { if ((Invoke-Safe { $b.Current.AutomationId } "") -match "captions") { $pane = $true; break } }
+  }
+  $pt = ""
+  $tp = Invoke-Safe { $Root.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern) }
+  if ($tp) { $pt = Invoke-Safe { $tp.DocumentRange.GetText(20000) } "" }
+  return [pscustomobject]@{ paneOpen = $pane; patternTextLen = $pt.Length; patternTextTail = ($pt.Substring([Math]::Max(0, $pt.Length - 400))) }
 }
 
 function Measure-Captions {
-  $best = 0; $sample = $null; $win = ""
+  $best = 0; $sample = $null; $win = ""; $pane = $false; $ptLen = 0; $tail = ""
   foreach ($r in Get-MeetingRoots) {
+    $state = Get-PaneState $r.Area
+    if ($state.paneOpen) { $pane = $true }
+    if ($state.patternTextLen -gt $ptLen) { $ptLen = $state.patternTextLen; $tail = $state.patternTextTail }
     $caps = @(Get-StructuralCaptions $r.Area)
     if ($caps.Count -gt $best) { $best = $caps.Count; $sample = $caps[0]; $win = $r.Window }
   }
-  return [pscustomobject]@{ count = $best; sample = $sample; window = $win }
+  return [pscustomobject]@{ count = $best; sample = $sample; window = $win; paneOpen = $pane; patternTextLen = $ptLen; patternTextTail = $tail }
 }
 
 # --- run the matrix ----------------------------------------------------------------------------
 $roots = Get-MeetingRoots
 if ($roots.Count -eq 0) { throw "No Teams meeting RootWebArea found. Join a meeting, enable captions, retry." }
+
+# ABORT unless captions are demonstrably on screen. Otherwise every trigger reports 0 caption
+# nodes and the run looks like a negative result when it measured nothing at all.
+$pre = Measure-Captions
+Write-Host ("precondition: captionsPane={0} patternTextLen={1}" -f $pre.paneOpen, $pre.patternTextLen)
+if (-not $pre.paneOpen) {
+  throw "Captions pane NOT found (no Button with AutomationId ~ 'captions'). You are not in a meeting with live captions ON. This run would be meaningless — enable captions, let a few lines appear, rerun."
+}
+# No magic length threshold: a real forced run with 3 caption lines measured only 814 chars, so
+# any cutoff would reject valid runs. Show the tail instead and let the operator confirm that
+# spoken lines are present before trusting a zero.
+Write-Host "patternText tail (confirm you can see spoken caption lines here):" -ForegroundColor DarkGray
+Write-Host ("  " + ($pre.patternTextTail -replace "`r?`n", " " -replace [string][char]0xfffc, " | ")) -ForegroundColor DarkGray
+Write-Host ""
 
 $targets = @()
 foreach ($r in $roots) {
@@ -216,11 +259,14 @@ foreach ($trigger in @("none", "msaa", "ia2", "simpledom", "uia-root")) {
   }
   $m = Measure-Captions
   $results += [pscustomobject]@{
-    trigger        = $trigger
-    handshake      = ($status | Select-Object -Unique) -join ","
-    captionNodes   = $m.count
-    sampleSpeaker  = $m.sample.speaker
-    sampleText     = $m.sample.text
+    trigger         = $trigger
+    handshake       = ($status | Select-Object -Unique) -join ","
+    captionNodes    = $m.count
+    paneOpen        = $m.paneOpen
+    patternTextLen  = $m.patternTextLen
+    patternTextTail = $m.patternTextTail
+    sampleSpeaker   = $m.sample.speaker
+    sampleText      = $m.sample.text
   }
   $color = if ($m.count -gt 0) { "Green" } else { "DarkGray" }
   Write-Host ("{0,-10} handshake={1,-28} captionNodes={2}" -f $trigger, (($status | Select-Object -Unique) -join ","), $m.count) -ForegroundColor $color
@@ -252,8 +298,10 @@ if ($winner) {
   Write-Host ("=> WINNER: '{0}' exposes captions with NO env var and NO Teams restart." -f $winner.trigger) -ForegroundColor Green
 }
 elseif (($results | Where-Object { $_.trigger -eq "none" }).captionNodes -gt 0) {
-  Write-Host "=> Captions were ALREADY structural before any trigger (env var still set?)." -ForegroundColor Yellow
+  Write-Host "=> Captions were ALREADY structural before any trigger (env var still set / Teams not restarted)." -ForegroundColor Yellow
 }
 else {
-  Write-Host "=> No handshake worked. The env var (or option C: our own WebView2) is required." -ForegroundColor Yellow
+  # Only now is a zero meaningful: the pane was open and Teams was rendering caption lines.
+  Write-Host "=> VALID NEGATIVE: captions pane open, Teams rendering lines, yet no trigger exposed" -ForegroundColor Yellow
+  Write-Host "   discrete nodes. The env var (or option C: our own WebView2) is required." -ForegroundColor Yellow
 }
