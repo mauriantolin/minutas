@@ -41,6 +41,7 @@ const CSS = `
   --foreground: oklch(0.141 0.005 285.82);
   --muted-foreground: oklch(0.552 0.016 285.94);
   --accent: oklch(0.962 0.018 272.31);
+  --accent-foreground: oklch(0.457 0.24 277.02);
   --destructive: oklch(0.577 0.245 27.33);
   --border: oklch(0.92 0.004 286.32);
   --ring: oklch(0.545 0.245 277);
@@ -56,6 +57,7 @@ const CSS = `
     --foreground: oklch(0.985 0 0);
     --muted-foreground: oklch(0.705 0.015 286.07);
     --accent: oklch(0.257 0.09 281.29);
+    --accent-foreground: oklch(0.785 0.115 274.71);
     --destructive: oklch(0.637 0.237 25.33);
     --border: oklch(0.274 0.006 286.03);
     --ring: oklch(0.585 0.233 277.12);
@@ -118,10 +120,11 @@ const CSS = `
   display: grid;
   place-items: center;
   font: inherit;
+  transition: background 0.12s, color 0.12s;
 }
-.iconbtn { width: 26px; height: 26px; font-size: 13px; flex: none; }
+.iconbtn { width: 28px; height: 28px; font-size: 13px; flex: none; }
 .tagbtn { width: 32px; height: 32px; font-size: 16px; flex: none; }
-.iconbtn:hover, .tagbtn:hover { background: var(--accent); color: var(--foreground); }
+.iconbtn:hover, .tagbtn:hover { background: var(--accent); color: var(--accent-foreground); }
 .lines {
   flex: 1;
   overflow-y: auto;

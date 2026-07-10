@@ -11,9 +11,20 @@
     "@teams-agent-core/shared": "*",
     "@aws-sdk/client-transcribe-streaming": "^3.700.0",
     "@aws-sdk/credential-provider-cognito-identity": "^3.700.0",
-    "amazon-cognito-identity-js": "^6.3.12"
+    "amazon-cognito-identity-js": "^6.3.12",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.469.0",
+    "radix-ui": "^1.6.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0"
+    "@tailwindcss/cli": "^4.3.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "esbuild": "^0.24.0",
+    "tailwindcss": "^4.3.2"
   }
 }
