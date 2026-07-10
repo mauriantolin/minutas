@@ -674,6 +674,16 @@ public sealed partial class MainWindow : Window
         _autoCaptureChecking = true;
         try
         {
+            // Solo auto-arranca si REALMENTE estas en la llamada (boton de colgar presente). Un
+            // titulo de reunion detectable no alcanza: una ventana de reunion abierta sin unirse, o
+            // el panel de subtitulos visible fuera de la llamada, disparaban la captura sola.
+            var inCall = await Task.Run(() => _presence.IsInCall());
+            if (!inCall)
+            {
+                _suppressedAutoCaptureTitle = null;
+                return;
+            }
+
             var title = await Task.Run(() => _recorder.DetectCurrentMeetingTitle());
             if (!IsAutoCaptureMeetingTitle(title))
             {

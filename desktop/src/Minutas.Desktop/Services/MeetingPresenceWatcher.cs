@@ -131,6 +131,10 @@ public sealed class MeetingPresenceWatcher : IDisposable
         }
     }
 
+    // Verdad de terreno de "estoy en la llamada": existe el boton de colgar/salir. Una ventana de
+    // reunion abierta pero sin unirse (pre-join, o reunion vieja en pantalla) NO lo tiene.
+    public bool IsInCall() => IsMeetingActive();
+
     private bool IsMeetingActive()
     {
         foreach (var window in _windows.GetActiveTeamsWindows())

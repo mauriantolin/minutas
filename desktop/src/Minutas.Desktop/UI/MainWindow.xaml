@@ -414,12 +414,14 @@
                             Background="{StaticResource BgBrush}"
                             BorderBrush="{StaticResource BorderBrushSoft}"
                             BorderThickness="1"
-                            CornerRadius="10"
-                            MinHeight="220">
+                            CornerRadius="10">
+                        <!-- Altura fija: la fila padre es Auto, asi que sin una altura concreta el
+                             ScrollViewer crece con el contenido y nunca muestra scroll. -->
                         <ScrollViewer x:Name="TranscriptScroll"
+                                      Height="300"
                                       VerticalScrollBarVisibility="Auto"
-                                      Padding="12,10"
-                                      MaxHeight="360">
+                                      CanContentScroll="False"
+                                      Padding="12,10">
                             <ItemsControl x:Name="TranscriptList">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
