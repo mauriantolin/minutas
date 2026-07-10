@@ -78,6 +78,9 @@ public sealed class TeamsCaptionWatcher
         return GetActiveCaptionRoots(GetTeamsProcessIds()).Any(root => root.StructuralCaptions.Count > 0);
     }
 
+    /// <summary>Sanity check del gate: el panel de subtitulos NO existe en chat/calendario.</summary>
+    internal static bool HasCaptionPane(AutomationElement root) => ReadCaptionPane(root).PaneFound;
+
     public string? GetCurrentMeetingTitle()
     {
         return GetStatus().Title;
@@ -199,7 +202,10 @@ public sealed class TeamsCaptionWatcher
     // Los nodos de subtitulo tienen AutomationId vacio, pero los botones hermanos NO: ese
     // AutomationId es el ancla estable (no depende de idioma ni de tenant). Si el renderer no
     // esta en AXMode completo no hay nodos y devolvemos vacio -> el llamador cae al parser plano.
-    private static IReadOnlyList<CaptionDraft> GetStructuralCaptions(AutomationElement root)
+    // Un unico recorrido de botones: el AutomationId "captions" prueba que el panel de subtitulos
+    // esta presente (tambien en AXMode reducido), y su padre contiene los enunciados si el renderer
+    // los expone. PaneFound es la senal de "aca hay subtitulos"; Captions, el contenido.
+    private static (bool PaneFound, IReadOnlyList<CaptionDraft> Captions) ReadCaptionPane(AutomationElement root)
     {
         var buttons = Safe(
             () => root.FindAll(
@@ -208,6 +214,7 @@ public sealed class TeamsCaptionWatcher
                 .Cast<AutomationElement>().ToArray(),
             Array.Empty<AutomationElement>());
 
+        var paneFound = false;
         foreach (var button in buttons)
         {
             var automationId = Safe(() => button.Current.AutomationId, "");
@@ -215,6 +222,8 @@ public sealed class TeamsCaptionWatcher
             {
                 continue;
             }
+
+            paneFound = true;
 
             // El padre se busca en la MISMA vista que usa FindAll (control), no en la cruda: en la
             // vista cruda los Text del subtitulo no son hijos directos del item, y mezclarlas hacia
@@ -233,12 +242,12 @@ public sealed class TeamsCaptionWatcher
                 var captions = ExtractCaptionItems(container);
                 if (captions.Count > 0)
                 {
-                    return captions;
+                    return (true, captions);
                 }
             }
         }
 
-        return Array.Empty<CaptionDraft>();
+        return (paneFound, Array.Empty<CaptionDraft>());
     }
 
     private static IReadOnlyList<CaptionDraft> ExtractCaptionItems(AutomationElement container)
@@ -371,18 +380,22 @@ public sealed class TeamsCaptionWatcher
                 var patternText = GetTextFromElement(rootWebArea);
                 var isCaptionsWindow = IsCaptionsWindowTitle(windowName) || IsCaptionsWindowTitle(rootName);
                 var isMeetingSurface = IsMeetingSurface(patternText);
-                var structuralCaptions = GetStructuralCaptions(rootWebArea);
-                // Los nodos estructurales tambien valen como senal de "hay subtitulos": asi el
-                // root sobrevive aunque el blob plano no parsee (invitado sin "(Org)", otro idioma).
+                var pane = ReadCaptionPane(rootWebArea);
+                var structuralCaptions = pane.Captions;
                 var hasCaptions = structuralCaptions.Count > 0 || IsCaptionLikeText(patternText);
                 var captionsUiVisible = ContainsCaptionChrome(patternText);
                 var meetingEnded = IsMeetingEndedText(patternText);
 
-                // Un root con subtitulos se conserva SIEMPRE, aunque IsMeetingSurface no puntue:
-                // Teams auto-oculta la barra de controles con el mouse quieto y entonces el
-                // patternText pierde "Salir"/"Compartir contenido" -> el score cae a 0 y se
-                // descartaban subtitulos que seguian presentes en el arbol.
-                if (!isMeetingSurface && !hasCaptions && !meetingEnded)
+                // Un root con el PANEL de subtitulos se conserva siempre, aunque IsMeetingSurface no
+                // puntue: Teams auto-oculta la barra de controles con el mouse quieto y el patternText
+                // pierde "Salir"/"Compartir contenido" -> el score cae a 0 y se descartaban subtitulos
+                // que seguian presentes en el arbol.
+                //
+                // La senal es el PANEL (boton con AutomationId ~ "captions"), no "el texto parece un
+                // subtitulo": la lista de chats tiene filas "Nombre (Org)" que IsCaptionLikeText da por
+                // buenas, y admitir ese root hacia que GetStatus devolviera un titulo fuera de toda
+                // reunion y la captura automatica arrancara sola.
+                if (!isMeetingSurface && !pane.PaneFound && !meetingEnded)
                 {
                     continue;
                 }
