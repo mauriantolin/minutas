@@ -15,7 +15,13 @@ internal static class Program
     private static void Main(string[] args)
     {
         // Must run before anything else: handles install/update/uninstall hooks.
-        VelopackApp.Build().Run();
+        // La alta fidelidad se activa POR DEFECTO en la instalacion (variable de entorno de usuario)
+        // y se quita en la desinstalacion, asi Teams arranca en modo bueno desde el primer boot sin
+        // que el usuario tenga que reiniciarlo a mano. El toggle en la app permite desactivarla.
+        VelopackApp.Build()
+            .OnAfterInstallFastCallback(_ => TryEnableHighFidelity())
+            .OnBeforeUninstallFastCallback(_ => TryDisableHighFidelity())
+            .Run();
 
         StartUpdateCheck();
 
@@ -46,6 +52,30 @@ internal static class Program
         }
 
         app.Run();
+    }
+
+    private static void TryEnableHighFidelity()
+    {
+        try
+        {
+            new HighFidelityEnvironmentService().Enable();
+        }
+        catch
+        {
+            // El hook de instalacion nunca debe frenar el instalador.
+        }
+    }
+
+    private static void TryDisableHighFidelity()
+    {
+        try
+        {
+            new HighFidelityEnvironmentService().Disable();
+        }
+        catch
+        {
+            // El hook de desinstalacion nunca debe frenar el desinstalador.
+        }
     }
 
     // Downloads updates in the background and applies them on exit, so an update

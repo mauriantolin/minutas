@@ -24,8 +24,8 @@ public sealed partial class MainWindow : Window
     private readonly ObservableCollection<ActivityRow> _activityRows = new();
     private readonly ObservableCollection<TranscriptLine> _transcript = new();
     private readonly DesktopUpdateService _updates = new();
+    private readonly HighFidelityEnvironmentService _highFidelity = new();
     private readonly DispatcherTimer _elapsedTimer = new();
-    private readonly DispatcherTimer _autoCaptureTimer = new();
     private readonly Forms.NotifyIcon _tray;
 
     private DateTimeOffset? _captureStartedAt;
@@ -33,9 +33,12 @@ public sealed partial class MainWindow : Window
     private bool _authUiInitialized;
     private bool _loadingStartupPreference;
     private bool _loadingAutoCapturePreference;
+    private bool _loadingHighFidelityPreference;
     private bool _autoCaptureMeetingsEnabled = true;
-    private bool _autoCaptureChecking;
-    private string? _suppressedAutoCaptureTitle;
+    private bool _startingCapture;
+    private bool _degradedNoticeShown;
+    private bool _structuralConfirmed;
+    private bool _degradedCheckInFlight;
     private bool _reallyClose;
     private bool _autoStartedCapture;
 
@@ -71,9 +74,6 @@ public sealed partial class MainWindow : Window
         _tray = BuildTray();
         _elapsedTimer.Interval = TimeSpan.FromSeconds(1);
         _elapsedTimer.Tick += (_, _) => RefreshElapsed();
-        _autoCaptureTimer.Interval = TimeSpan.FromSeconds(5);
-        _autoCaptureTimer.Tick += async (_, _) => await CheckAutoCaptureAsync();
-        _autoCaptureTimer.Start();
 
         WireEvents();
         RefreshPlaceholders();
@@ -88,6 +88,7 @@ public sealed partial class MainWindow : Window
 
         _authUiInitialized = true;
         await RefreshAutoCapturePreferenceAsync().ConfigureAwait(false);
+        await RefreshHighFidelityPreferenceAsync().ConfigureAwait(false);
         await RefreshAuthUiAsync();
     }
 
@@ -166,6 +167,8 @@ public sealed partial class MainWindow : Window
         AutoCaptureMeetingsCheckBox.Unchecked += async (_, _) => await SetAutoCaptureMeetingsAsync(false);
         StartupWithWindowsCheckBox.Checked += (_, _) => SetStartupWithWindows(true);
         StartupWithWindowsCheckBox.Unchecked += (_, _) => SetStartupWithWindows(false);
+        HighFidelityAutoCheckBox.Checked += async (_, _) => await SetAutoHighFidelityAsync(true);
+        HighFidelityAutoCheckBox.Unchecked += async (_, _) => await SetAutoHighFidelityAsync(false);
         _tray.DoubleClick += (_, _) => ShowWindow();
 
         _recorder.StatusChanged += (_, message) => Dispatch(() => SetStatus(message));
@@ -337,11 +340,15 @@ public sealed partial class MainWindow : Window
 
     private async Task StartCaptureAsync(bool autoStarted = false)
     {
-        if (_recorder.IsCapturing)
+        // _startingCapture cierra la ventana entre este guard y el momento en que el recorder marca
+        // IsCapturing: se setea SINCRONICAMENTE (mismo hilo de UI) antes del primer await, asi dos
+        // disparos casi simultaneos (auto-start + manual) no arrancan dos capturas.
+        if (_recorder.IsCapturing || _startingCapture)
         {
             return;
         }
 
+        _startingCapture = true;
         try
         {
             _autoStartedCapture = autoStarted;
@@ -366,6 +373,7 @@ public sealed partial class MainWindow : Window
         }
         finally
         {
+            _startingCapture = false;
             Dispatch(() => StartButton.IsEnabled = true);
         }
     }
@@ -385,11 +393,7 @@ public sealed partial class MainWindow : Window
             CancelButton.IsEnabled = false;
             SetStatus("Finalizando y generando resumen...");
             await _recorder.StopAsync().ConfigureAwait(false);
-            Dispatch(() =>
-            {
-                SetCaptureUi(false);
-                SuppressCurrentAutoCaptureMeeting();
-            });
+            Dispatch(() => SetCaptureUi(false));
             await LoadRecentMeetingsAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -419,11 +423,7 @@ public sealed partial class MainWindow : Window
         {
             SetStatus("Descartando captura...");
             await _recorder.CancelAsync().ConfigureAwait(false);
-            Dispatch(() =>
-            {
-                SetCaptureUi(false);
-                SuppressCurrentAutoCaptureMeeting();
-            });
+            Dispatch(() => SetCaptureUi(false));
             await LoadRecentMeetingsAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -661,52 +661,130 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async Task CheckAutoCaptureAsync()
+    private async Task RefreshHighFidelityPreferenceAsync()
     {
-        if (_autoCaptureChecking ||
-            !_autoCaptureMeetingsEnabled ||
-            _recorder.IsCapturing ||
-            string.IsNullOrWhiteSpace(_signedEmail))
+        _loadingHighFidelityPreference = true;
+        try
+        {
+            var preferences = await _preferences.ReadAsync().ConfigureAwait(false);
+
+            // Reconciliamos la variable de entorno con la preferencia guardada en cada arranque: el
+            // hook de instalacion la activa por defecto, pero si el usuario la desactivo queremos que
+            // se respete aunque un update haya vuelto a correr el hook.
+            try
+            {
+                if (preferences.AutoHighFidelity)
+                {
+                    _highFidelity.Enable();
+                }
+                else
+                {
+                    _highFidelity.Disable();
+                }
+            }
+            catch
+            {
+                // Escribir la variable de usuario puede fallar sin permisos; no es fatal.
+            }
+
+            Dispatch(() => HighFidelityAutoCheckBox.IsChecked = preferences.AutoHighFidelity);
+        }
+        catch (Exception ex)
+        {
+            Dispatch(() =>
+            {
+                HighFidelityAutoCheckBox.IsEnabled = false;
+                HighFidelityHintText.Text = $"No se pudo leer la configuración: {ex.Message}";
+            });
+        }
+        finally
+        {
+            _loadingHighFidelityPreference = false;
+        }
+    }
+
+    private async Task SetAutoHighFidelityAsync(bool enabled)
+    {
+        if (_loadingHighFidelityPreference)
         {
             return;
         }
 
-        _autoCaptureChecking = true;
         try
         {
-            // Solo auto-arranca si REALMENTE estas en la llamada (boton de colgar presente). Un
-            // titulo de reunion detectable no alcanza: una ventana de reunion abierta sin unirse, o
-            // el panel de subtitulos visible fuera de la llamada, disparaban la captura sola.
-            var inCall = await Task.Run(() => _presence.IsInCall());
-            if (!inCall)
+            if (enabled)
             {
-                _suppressedAutoCaptureTitle = null;
-                return;
+                _highFidelity.Enable();
+            }
+            else
+            {
+                _highFidelity.Disable();
             }
 
-            var title = await Task.Run(() => _recorder.DetectCurrentMeetingTitle());
-            if (!IsAutoCaptureMeetingTitle(title))
-            {
-                _suppressedAutoCaptureTitle = null;
-                return;
-            }
-
-            if (string.Equals(title, _suppressedAutoCaptureTitle, StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-
-            SetStatus($"Reunión detectada: {title}. Iniciando captura...");
-            await StartCaptureAsync(autoStarted: true);
+            await _preferences.SetAutoHighFidelityAsync(enabled).ConfigureAwait(false);
+            Dispatch(() => SetStatus(enabled
+                ? "Alta fidelidad activada. Reiniciá Teams una vez para que la tome."
+                : "Alta fidelidad automática desactivada."));
         }
         catch (Exception ex)
         {
-            SetStatus($"No se pudo iniciar captura automática: {ex.Message}");
+            Dispatch(() => SetStatus($"No se pudo actualizar alta fidelidad: {ex.Message}"));
         }
-        finally
+    }
+
+    // Aviso cuando Teams NO esta en alta fidelidad durante una captura: sin nodos estructurales el
+    // lector cae al parser plano, que es el que arrastra texto fantasma. Se dispara una sola vez por
+    // captura, y solo si ya hay subtitulos fluyendo (para no avisar antes de que alguien hable).
+    private void MaybeWarnDegradedCapture(TimeSpan elapsed)
+    {
+        if (_degradedNoticeShown ||
+            _structuralConfirmed ||
+            _degradedCheckInFlight ||
+            elapsed < TimeSpan.FromSeconds(20) ||
+            _transcript.Count == 0)
         {
-            _autoCaptureChecking = false;
+            return;
         }
+
+        // HasStructuralCaptions() hace un recorrido UIA: NO puede correr en el hilo de UI (jank). Se
+        // lanza off-thread y no se solapa (_degradedCheckInFlight). Ante una excepcion transitoria no
+        // alarmamos: se reintenta en el proximo tick.
+        _degradedCheckInFlight = true;
+        _ = Task.Run(() =>
+        {
+            bool structural;
+            try
+            {
+                structural = _recorder.HasStructuralCaptions();
+            }
+            catch
+            {
+                structural = true;
+            }
+
+            Dispatch(() =>
+            {
+                _degradedCheckInFlight = false;
+                if (_degradedNoticeShown || _structuralConfirmed)
+                {
+                    return;
+                }
+
+                if (structural)
+                {
+                    _structuralConfirmed = true;
+                    return;
+                }
+
+                _degradedNoticeShown = true;
+                SetStatus("Teams no está en alta fidelidad: la transcripción puede ser imprecisa.");
+                _tray.ShowBalloonTip(
+                    6000,
+                    "Minutix",
+                    "Teams no está en modo alta fidelidad. Activá 'Alta fidelidad automática' y reiniciá Teams para capturar bien desde el arranque.",
+                    Forms.ToolTipIcon.Warning);
+            });
+        });
     }
 
     private void UpdateAutoCaptureHint()
@@ -714,19 +792,6 @@ public sealed partial class MainWindow : Window
         AutoCaptureHintText.Text = _autoCaptureMeetingsEnabled
             ? "Detecta una llamada de Teams Desktop y empieza a transcribir."
             : "Podés iniciar manualmente con el botón de abajo.";
-    }
-
-    private void SuppressCurrentAutoCaptureMeeting()
-    {
-        try
-        {
-            var title = _recorder.DetectCurrentMeetingTitle();
-            _suppressedAutoCaptureTitle = IsAutoCaptureMeetingTitle(title) ? title : null;
-        }
-        catch
-        {
-            _suppressedAutoCaptureTitle = null;
-        }
     }
 
     private void SetStartupWithWindows(bool enabled)
@@ -790,6 +855,9 @@ public sealed partial class MainWindow : Window
 
         if (capturing)
         {
+            _degradedNoticeShown = false;
+            _structuralConfirmed = false;
+            _degradedCheckInFlight = false;
             _captureStartedAt ??= DateTimeOffset.Now;
             _elapsedTimer.Start();
             RefreshElapsed();
@@ -847,6 +915,8 @@ public sealed partial class MainWindow : Window
         ElapsedText.Text = elapsed.TotalHours >= 1
             ? elapsed.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture)
             : elapsed.ToString(@"mm\:ss", CultureInfo.InvariantCulture);
+
+        MaybeWarnDegradedCapture(elapsed);
     }
 
     private void OpenLive()
@@ -964,19 +1034,6 @@ public sealed partial class MainWindow : Window
         return elapsed.TotalHours >= 1
             ? elapsed.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture)
             : elapsed.ToString(@"mm\:ss", CultureInfo.InvariantCulture);
-    }
-
-    private static bool IsAutoCaptureMeetingTitle(string? title)
-    {
-        if (string.IsNullOrWhiteSpace(title))
-        {
-            return false;
-        }
-
-        return !title.Equals("Microsoft Teams", StringComparison.OrdinalIgnoreCase) &&
-            !title.Equals("Calendar", StringComparison.OrdinalIgnoreCase) &&
-            !title.Equals("Chat", StringComparison.OrdinalIgnoreCase) &&
-            !title.Equals("Meeting with Microsoft Teams", StringComparison.OrdinalIgnoreCase);
     }
 
     public sealed record ActivityRow(string Title, string Meta, string? Url);

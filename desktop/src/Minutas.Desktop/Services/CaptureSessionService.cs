@@ -57,7 +57,13 @@ public sealed class CaptureSessionService
 
     public bool HasStructuralCaptions() => _captions.HasStructuralCaptions();
 
-    public async Task StartAsync(CancellationToken cancellationToken = default)
+    // Sincrono a proposito (no hay ningun await antes de asignar _state): IsCapturing pasa a true de
+    // inmediato en el hilo de UI, sin ninguna ventana async donde otro auto-start pudiera colarse y
+    // registrar una segunda reunion, ni donde un Stop/Cancel concurrente pudiera tocar un _state a
+    // medio inicializar. El registro de la reunion lo hace EnsureMeetingRegisteredAsync (bajo
+    // RegistrationLock) en la primera vuelta de RunTitleDetectionLoopAsync — el mismo camino lockeado
+    // que usa el resto de la clase, seguro frente a un Stop concurrente.
+    public Task StartAsync(CancellationToken cancellationToken = default)
     {
         if (_state is not null)
         {
@@ -71,15 +77,9 @@ public sealed class CaptureSessionService
         var directory = Path.Combine(_paths.Captures, $"{startedAt:yyyyMMdd-HHmmss}-{captureId}");
         Directory.CreateDirectory(directory);
 
-        var meetingId = IsGenericMeetingTitle(title)
-            ? null
-            : await _api.RegisterMeetingAsync(
-                new MeetingRegistrationRequest(captureId, title, startedAt.ToString("O")),
-                cancellationToken).ConfigureAwait(false);
-
-        _state = new CaptureState(
+        var state = new CaptureState(
             CaptureId: captureId,
-            MeetingId: meetingId,
+            MeetingId: null,
             Title: title,
             StartedAt: startedAt,
             ConsentGrantedAt: startedAt,
@@ -87,16 +87,17 @@ public sealed class CaptureSessionService
             TranscriptPath: Path.Combine(directory, "captions.txt"),
             JsonlPath: Path.Combine(directory, "captions.jsonl"),
             Cancellation: new CancellationTokenSource());
+        _state = state;
 
-        StatusChanged?.Invoke(this, meetingId is null
-            ? "Capturando. Esperando reunión de Teams..."
-            : $"Capturando. MeetingId: {meetingId}");
-        CaptureStateChanged?.Invoke(this, new CaptureStateChangedEventArgs(true, meetingId));
+        StatusChanged?.Invoke(this, "Capturando. Esperando reunión de Teams...");
+        CaptureStateChanged?.Invoke(this, new CaptureStateChangedEventArgs(true, null));
 
-        _ = Task.Run(() => RunTitleDetectionLoopAsync(_state, _state.Cancellation.Token), CancellationToken.None);
-        _ = Task.Run(() => RunCaptureAsync(_state, _state.Cancellation.Token), CancellationToken.None);
-        _ = Task.Run(() => RunFlushLoopAsync(_state, _state.Cancellation.Token), CancellationToken.None);
-        _ = Task.Run(() => RunMeetingMonitorLoopAsync(_state, _state.Cancellation.Token), CancellationToken.None);
+        _ = Task.Run(() => RunTitleDetectionLoopAsync(state, state.Cancellation.Token), CancellationToken.None);
+        _ = Task.Run(() => RunCaptureAsync(state, state.Cancellation.Token), CancellationToken.None);
+        _ = Task.Run(() => RunFlushLoopAsync(state, state.Cancellation.Token), CancellationToken.None);
+        _ = Task.Run(() => RunMeetingMonitorLoopAsync(state, state.Cancellation.Token), CancellationToken.None);
+
+        return Task.CompletedTask;
     }
 
     public async Task<FinalizeResponse?> StopAsync(CancellationToken cancellationToken = default, bool automatic = false)

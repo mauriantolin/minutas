@@ -485,23 +485,29 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <StackPanel>
-                        <TextBlock Text="Lectura de alta fidelidad"
+                        <TextBlock Text="Alta fidelidad automática"
                                    FontWeight="SemiBold"
                                    FontSize="13"
                                    TextWrapping="Wrap" />
                         <TextBlock x:Name="HighFidelityHintText"
-                                   Text="Reinicia Teams para leer cada subtítulo con su autor exacto. No cambia nada en tu sistema."
+                                   Text="Teams arranca leyendo cada subtítulo con su autor exacto, desde el inicio de Windows y sin reiniciarlo a mano. También afecta a otras apps WebView2 (Outlook nuevo, Widgets)."
                                    Foreground="{StaticResource MutedBrush}"
                                    FontSize="12"
                                    Margin="0,3,12,0"
                                    TextWrapping="Wrap" />
                     </StackPanel>
-                    <Button x:Name="HighFidelityButton"
-                            Grid.Column="1"
-                            Style="{StaticResource QuietButton}"
-                            VerticalAlignment="Center"
-                            Content="Reiniciar Teams"
-                            ToolTip="Cierra Teams y lo vuelve a abrir en modo alta fidelidad. Solo afecta a esa instancia de Teams: no modifica ninguna otra app ni deja nada configurado en Windows. No se puede hacer durante una reunión." />
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
+                        <CheckBox x:Name="HighFidelityAutoCheckBox"
+                                  Style="{StaticResource SwitchCheckBox}"
+                                  HorizontalAlignment="Right"
+                                  ToolTip="Persiste el modo alta fidelidad (variable de entorno de usuario) para que Teams siempre exponga los subtítulos con su autor exacto. Reversible." />
+                        <Button x:Name="HighFidelityButton"
+                                Style="{StaticResource LinkButton}"
+                                Margin="0,8,0,0"
+                                HorizontalAlignment="Right"
+                                Content="Reiniciar Teams ahora"
+                                ToolTip="Cierra Teams y lo vuelve a abrir para que tome el modo alta fidelidad de inmediato. No se puede hacer durante una reunión." />
+                    </StackPanel>
                 </Grid>
             </Grid>
         </Border>
