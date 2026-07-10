@@ -26,8 +26,12 @@
 
   POSITIVE CONTROL: an open captions pane is NOT the same as a pane with lines. With no captions
   on screen every trigger reports zero nodes and the run proves nothing. So the probe snapshots
-  the patternText chunks, asks you to SPEAK, and refuses to continue until NEW chunks appear.
-  Those new chunks are the caption lines, and they are what makes a zero a real negative.
+  the patternText chunks, asks you to SPEAK, and looks for genuinely new ones. Digits are
+  normalised away first, because the toolbar chunk carries the elapsed-time clock and would
+  otherwise look new every second - it fooled an earlier version of this probe.
+  It then ASKS whether captions are visible on screen, and aborts if they are not. If they are
+  visible yet reached neither the structural tree nor patternText, that is reported as a distinct
+  finding: the shipped flat parser would be blind too, and this is no longer an AXMode question.
 
 .PREREQUISITES  (this is what makes the result representative of a fresh client install)
   1. Clear the env var and RESTART Teams, otherwise you are measuring the forced path:
@@ -258,38 +262,70 @@ if (-not $pre.paneOpen) {
 # no captions at all. So prove captions are flowing, without eyeballing and without depending on
 # names or locale: snapshot the patternText chunks, have the operator speak, and require NEW
 # chunks to appear. Those new chunks ARE the caption lines.
+# Digits are normalised away before comparing: the meeting toolbar chunk embeds the elapsed-time
+# clock ("14:39 Chat Gente ..."), so it changes every second and would otherwise masquerade as a
+# brand-new caption line. It did, and the probe believed it.
 function Get-Chunks {
   $sep = [char]0xfffc
-  $set = New-Object System.Collections.Generic.HashSet[string]
+  $map = @{}
   foreach ($r in Get-MeetingRoots) {
     $tp = Invoke-Safe { $r.Area.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern) }
     if (-not $tp) { continue }
     $pt = Invoke-Safe { $tp.DocumentRange.GetText(20000) } ""
     foreach ($c in $pt.Split($sep)) {
-      $t = $c.Trim()
-      if ($t.Length -gt 0) { [void]$set.Add($t) }
+      $raw = ($c -replace '\s+', ' ').Trim()
+      if ($raw.Length -eq 0) { continue }
+      $key = $raw -replace '\d', '#'
+      $map[$key] = $raw
     }
   }
-  return $set
+  return $map
 }
 
-$before = Get-Chunks
+# Two samples 3s apart so anything that churns on its own is already in the "before" set.
+$b1 = Get-Chunks; Start-Sleep -Seconds 3; $b2 = Get-Chunks
+$before = New-Object System.Collections.Generic.HashSet[string]
+foreach ($k in $b1.Keys) { [void]$before.Add($k) }
+foreach ($k in $b2.Keys) { [void]$before.Add($k) }
+
 Write-Host ""
-Write-Host "SPEAK NOW - say a couple of full sentences out loud." -ForegroundColor Cyan
-Write-Host "Waiting up to 60s for new caption lines to appear..." -ForegroundColor Cyan
+Write-Host "SPEAK NOW - say a couple of full sentences out loud, WITH YOUR MIC UNMUTED." -ForegroundColor Cyan
+Write-Host "Waiting up to 60s for new caption lines to appear in patternText..." -ForegroundColor Cyan
 $spoken = @()
 for ($i = 0; $i -lt 20; $i++) {
   Start-Sleep -Seconds 3
   $after = Get-Chunks
-  $new = @($after | Where-Object { -not $before.Contains($_) -and ($_ -split '\s+').Count -ge 3 })
+  $new = @()
+  foreach ($k in $after.Keys) {
+    if ($before.Contains($k)) { continue }
+    if (($after[$k] -split '\s+').Count -lt 3) { continue }
+    $new += $after[$k]
+  }
   if ($new.Count -ge 1) { $spoken = $new; break }
-  Write-Host "  ...still no new caption lines" -ForegroundColor DarkGray
+  Write-Host "  ...still nothing new" -ForegroundColor DarkGray
+}
+
+if ($spoken.Count -gt 0) {
+  Write-Host ("New caption-like chunk(s) in patternText: {0}" -f $spoken.Count) -ForegroundColor Green
+  $spoken | Select-Object -First 3 | ForEach-Object { Write-Host ("  + {0}" -f $_) -ForegroundColor Green }
+}
+else {
+  Write-Host "No new chunks appeared in patternText." -ForegroundColor Yellow
+}
+
+# The machine check can only see patternText. Ask the human what Teams actually DISPLAYED: if
+# captions are visible on screen but absent from patternText too, that is a different and worse
+# finding than "the AXMode did not escalate" - the shipped flat parser would be blind as well.
+Write-Host ""
+$seen = Read-Host "Do you SEE caption text (spoken words) in the Teams window right now? [y/n]"
+$captionsVisible = $seen -match '^(y|s)'
+if (-not $captionsVisible) {
+  throw "Captions are not being displayed. Every trigger reports zero nodes when there is nothing to read, so this run would prove nothing. Unmute your mic, confirm caption text appears in Teams, then rerun."
 }
 if ($spoken.Count -eq 0) {
-  throw "No caption lines appeared in patternText after 60s of waiting. Either nobody spoke, or Teams is not transcribing. Without caption lines on screen EVERY trigger reports zero nodes and the run proves nothing. Speak, confirm you see captions in the Teams UI, then rerun."
+  Write-Host "NOTE: captions are visible on screen but did NOT appear in patternText." -ForegroundColor Magenta
+  Write-Host "      That is a separate finding: the flat parser cannot see them either." -ForegroundColor Magenta
 }
-Write-Host ("Captions confirmed flowing. {0} new chunk(s), e.g.:" -f $spoken.Count) -ForegroundColor Green
-$spoken | Select-Object -First 3 | ForEach-Object { Write-Host ("  + {0}" -f $_) -ForegroundColor Green }
 Write-Host ""
 # No magic length threshold: a real forced run with 3 caption lines measured only 814 chars, so
 # any cutoff would reject valid runs. Show the tail instead and let the operator confirm that
@@ -359,10 +395,11 @@ if ($screenReaderSet) {
 }
 
 @{
-  envVarSet     = [bool]([Environment]::GetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "User"))
-  rendererHwnds = $targets.Count
-  spokenChunks  = @($spoken)   # the proof that captions were on screen while measuring
-  results       = $results
+  envVarSet        = [bool]([Environment]::GetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "User"))
+  rendererHwnds    = $targets.Count
+  captionsVisible  = $captionsVisible   # what the human saw on screen
+  spokenChunks     = @($spoken)         # caption lines that reached the flat patternText
+  results          = $results
 } | ConvertTo-Json -Depth 5 | Set-Content -Path $OutPath -Encoding UTF8
 
 Write-Host ""
@@ -374,10 +411,15 @@ if ($winner) {
 elseif (($results | Where-Object { $_.trigger -eq "none" }).captionNodes -gt 0) {
   Write-Host "=> Captions were ALREADY structural before any trigger (env var still set / Teams not restarted)." -ForegroundColor Yellow
 }
-else {
-  # A zero is only meaningful because we PROVED caption lines were on screen: $spoken is the set
-  # of chunks that appeared in patternText while the operator spoke.
-  Write-Host ("=> VALID NEGATIVE: {0} caption line(s) were on screen (verified, see spokenChunks)," -f $spoken.Count) -ForegroundColor Yellow
+elseif ($spoken.Count -gt 0) {
+  # Captions were provably on screen AND in the flat blob, yet no trigger produced nodes.
+  Write-Host ("=> VALID NEGATIVE: {0} caption chunk(s) reached patternText (see spokenChunks)," -f $spoken.Count) -ForegroundColor Yellow
   Write-Host "   yet no trigger exposed discrete nodes. Captions live only in the flat patternText." -ForegroundColor Yellow
   Write-Host "   The env var (or option C: our own WebView2) is required." -ForegroundColor Yellow
+}
+else {
+  # Visible on screen, absent from BOTH the structural tree and the flat blob.
+  Write-Host "=> DIFFERENT FINDING: captions are visible in Teams but reach NEITHER the structural" -ForegroundColor Magenta
+  Write-Host "   tree NOR patternText. The shipped flat parser is blind here too - this is not an" -ForegroundColor Magenta
+  Write-Host "   AXMode question. Send me the JSON; the caption pane may live in another process." -ForegroundColor Magenta
 }
