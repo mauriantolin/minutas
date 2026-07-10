@@ -1,6 +1,6 @@
-<#
+﻿<#
 .SYNOPSIS
-  High-frequency, LOSSLESS logger of the Teams RootWebArea patternText — the exact raw
+  High-frequency, LOSSLESS logger of the Teams RootWebArea patternText  -  the exact raw
   input the desktop watcher reads, BEFORE any filtering.
 
 .DESCRIPTION
@@ -10,7 +10,7 @@
   Unlike Probe-TeamsUiAutomation.ps1 (full-tree dump, collapses whitespace, strips U+FFFC),
   this tool:
     - polls fast (default 250 ms) so we can measure what a 750 ms watcher poll MISSES,
-    - preserves the raw U+FFFC (￼) chunk separators — they delimit caption lines,
+    - preserves the raw U+FFFC (?) chunk separators  -  they delimit caption lines,
     - keeps ONLY the RootWebArea document text (cheap to scan, no 12k-element walk).
 
   Pair its output with a browser-side reference truth (groundtruth-devtools-observer.js or

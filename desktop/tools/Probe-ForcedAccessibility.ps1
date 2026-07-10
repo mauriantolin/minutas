@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   VALIDATES OPTION B: does forcing Chromium renderer accessibility expose the Teams caption DOM
   as DISCRETE UIA nodes (author + text), instead of one flat RootWebArea.patternText blob?
@@ -19,10 +19,10 @@
                   we can read captions by structure, name/locale/tenant independent.
 
 .EXAMPLE
-  # 1) BASELINE — Teams already running, in a meeting, captions ON:
+  # 1) BASELINE  -  Teams already running, in a meeting, captions ON:
   powershell -ExecutionPolicy Bypass -File .\Probe-ForcedAccessibility.ps1 -Label baseline
 
-  # 2) FORCED — relaunch Teams with full AXMode, rejoin the meeting, captions ON, then:
+  # 2) FORCED  -  relaunch Teams with full AXMode, rejoin the meeting, captions ON, then:
   powershell -ExecutionPolicy Bypass -File .\Probe-ForcedAccessibility.ps1 -Relaunch -Target Teams
   #    ...rejoin meeting + enable captions, wait for a few caption lines, then:
   powershell -ExecutionPolicy Bypass -File .\Probe-ForcedAccessibility.ps1 -Label forced
@@ -95,7 +95,7 @@ function Get-PatternText {
 $records = New-Object System.Collections.Generic.List[object]
 $count = 0
 
-# Mirrors TeamsCaptionWatcher.GetStructuralCaptions — keep the two in sync.
+# Mirrors TeamsCaptionWatcher.GetStructuralCaptions  -  keep the two in sync.
 function Get-StructuralCaptions {
   param([System.Windows.Automation.AutomationElement]$Root)
   $btnCond = New-Object System.Windows.Automation.PropertyCondition(
@@ -177,7 +177,7 @@ try {
     # SAME algorithm the app uses: anchor on the sibling Button whose AutomationId contains
     # "captions" (stable, locale/tenant independent), take its parent, then collect descendant
     # Groups having >=2 direct Text children (author ... text).
-    # Do NOT score on "nodes with >=3 words" — chrome labels ("Controles de llamada") match that.
+    # Do NOT score on "nodes with >=3 words"  -  chrome labels ("Controles de llamada") match that.
     $named = @($records | Where-Object { $_.depth -gt 0 -and -not [string]::IsNullOrWhiteSpace($_.name) })
     $captionish = @(Get-StructuralCaptions $item.Area)
 

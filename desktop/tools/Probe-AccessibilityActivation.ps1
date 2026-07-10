@@ -1,13 +1,13 @@
-<#
+﻿<#
 .SYNOPSIS
   Finds a way to make Chromium expose the FULL accessibility tree (discrete caption nodes) on ANY
-  client machine — without the global WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS env var and WITHOUT
+  client machine  -  without the global WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS env var and WITHOUT
   restarting Teams.
 
 .DESCRIPTION
   Screen readers (NVDA/JAWS) get Chromium's full tree with no flags: they announce themselves as
   assistive-technology clients and Chromium escalates its AXMode. This probe tests, empirically,
-  which activation handshake (if any) does that — because the Chromium docs do not state it.
+  which activation handshake (if any) does that  -  because the Chromium docs do not state it.
 
   It applies each candidate trigger against the Teams renderer HWNDs, then re-scans the meeting
   RootWebArea with the SAME structural reader the app uses (anchor on the captions Buttons'
@@ -53,9 +53,13 @@ if ([Environment]::GetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
 }
 
 # Objective evidence of whether Teams was restarted after the var was cleared.
-Get-Process -Name "ms-teams", "msteams" -ErrorAction SilentlyContinue |
-Sort-Object StartTime | Select-Object -First 1 |
-ForEach-Object { Write-Host ("Teams process started at: {0}" -f $_.StartTime) -ForegroundColor DarkGray }
+# StartTime throws Access Denied on protected processes, and $ErrorActionPreference is Stop.
+try {
+  Get-Process -Name "ms-teams", "msteams" -ErrorAction SilentlyContinue |
+  Sort-Object StartTime -ErrorAction SilentlyContinue | Select-Object -First 1 |
+  ForEach-Object { Write-Host ("Teams process started at: {0}" -f $_.StartTime) -ForegroundColor DarkGray }
+}
+catch { Write-Host "Teams process start time: unavailable" -ForegroundColor DarkGray }
 
 Add-Type @"
 using System;
@@ -230,13 +234,16 @@ if ($roots.Count -eq 0) { throw "No Teams meeting RootWebArea found. Join a meet
 $pre = Measure-Captions
 Write-Host ("precondition: captionsPane={0} patternTextLen={1}" -f $pre.paneOpen, $pre.patternTextLen)
 if (-not $pre.paneOpen) {
-  throw "Captions pane NOT found (no Button with AutomationId ~ 'captions'). You are not in a meeting with live captions ON. This run would be meaningless — enable captions, let a few lines appear, rerun."
+  throw "Captions pane NOT found (no Button with AutomationId ~ 'captions'). You are not in a meeting with live captions ON. This run would be meaningless. Enable captions, let a few lines appear, then rerun."
 }
 # No magic length threshold: a real forced run with 3 caption lines measured only 814 chars, so
 # any cutoff would reject valid runs. Show the tail instead and let the operator confirm that
 # spoken lines are present before trusting a zero.
 Write-Host "patternText tail (confirm you can see spoken caption lines here):" -ForegroundColor DarkGray
-Write-Host ("  " + ($pre.patternTextTail -replace "`r?`n", " " -replace [string][char]0xfffc, " | ")) -ForegroundColor DarkGray
+$sep = [string][char]0xfffc
+$tail = $pre.patternTextTail
+$tail = $tail.Replace("`r", " ").Replace("`n", " ").Replace($sep, " | ")
+Write-Host ("  " + $tail) -ForegroundColor DarkGray
 Write-Host ""
 
 $targets = @()
