@@ -33,7 +33,6 @@ public sealed partial class MainWindow : Window
     private bool _authUiInitialized;
     private bool _loadingStartupPreference;
     private bool _loadingAutoCapturePreference;
-    private bool _loadingHighFidelityPreference;
     private bool _autoCaptureMeetingsEnabled = true;
     private bool _startingCapture;
     private bool _degradedNoticeShown;
@@ -88,7 +87,7 @@ public sealed partial class MainWindow : Window
 
         _authUiInitialized = true;
         await RefreshAutoCapturePreferenceAsync().ConfigureAwait(false);
-        await RefreshHighFidelityPreferenceAsync().ConfigureAwait(false);
+        await EnsureHighFidelityAsync().ConfigureAwait(false);
         await RefreshAuthUiAsync();
     }
 
@@ -167,8 +166,6 @@ public sealed partial class MainWindow : Window
         AutoCaptureMeetingsCheckBox.Unchecked += async (_, _) => await SetAutoCaptureMeetingsAsync(false);
         StartupWithWindowsCheckBox.Checked += (_, _) => SetStartupWithWindows(true);
         StartupWithWindowsCheckBox.Unchecked += (_, _) => SetStartupWithWindows(false);
-        HighFidelityAutoCheckBox.Checked += async (_, _) => await SetAutoHighFidelityAsync(true);
-        HighFidelityAutoCheckBox.Unchecked += async (_, _) => await SetAutoHighFidelityAsync(false);
         _tray.DoubleClick += (_, _) => ShowWindow();
 
         _recorder.StatusChanged += (_, message) => Dispatch(() => SetStatus(message));
@@ -661,75 +658,23 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async Task RefreshHighFidelityPreferenceAsync()
+    // Alta fidelidad SIEMPRE activa (ya no hay toggle): se refuerza en cada arranque por si un update
+    // o una limpieza quito la variable de entorno. El unico opt-out es desinstalar (el hook de
+    // desinstalacion la quita). Enable() es idempotente; corre off-thread para no tocar el registro
+    // en el hilo de UI.
+    private Task EnsureHighFidelityAsync()
     {
-        _loadingHighFidelityPreference = true;
-        try
+        return Task.Run(() =>
         {
-            var preferences = await _preferences.ReadAsync().ConfigureAwait(false);
-
-            // Reconciliamos la variable de entorno con la preferencia guardada en cada arranque: el
-            // hook de instalacion la activa por defecto, pero si el usuario la desactivo queremos que
-            // se respete aunque un update haya vuelto a correr el hook.
             try
             {
-                if (preferences.AutoHighFidelity)
-                {
-                    _highFidelity.Enable();
-                }
-                else
-                {
-                    _highFidelity.Disable();
-                }
+                _highFidelity.Enable();
             }
             catch
             {
                 // Escribir la variable de usuario puede fallar sin permisos; no es fatal.
             }
-
-            Dispatch(() => HighFidelityAutoCheckBox.IsChecked = preferences.AutoHighFidelity);
-        }
-        catch (Exception ex)
-        {
-            Dispatch(() =>
-            {
-                HighFidelityAutoCheckBox.IsEnabled = false;
-                HighFidelityHintText.Text = $"No se pudo leer la configuración: {ex.Message}";
-            });
-        }
-        finally
-        {
-            _loadingHighFidelityPreference = false;
-        }
-    }
-
-    private async Task SetAutoHighFidelityAsync(bool enabled)
-    {
-        if (_loadingHighFidelityPreference)
-        {
-            return;
-        }
-
-        try
-        {
-            if (enabled)
-            {
-                _highFidelity.Enable();
-            }
-            else
-            {
-                _highFidelity.Disable();
-            }
-
-            await _preferences.SetAutoHighFidelityAsync(enabled).ConfigureAwait(false);
-            Dispatch(() => SetStatus(enabled
-                ? "Alta fidelidad activada. Reiniciá Teams una vez para que la tome."
-                : "Alta fidelidad automática desactivada."));
-        }
-        catch (Exception ex)
-        {
-            Dispatch(() => SetStatus($"No se pudo actualizar alta fidelidad: {ex.Message}"));
-        }
+        });
     }
 
     // Aviso cuando Teams NO esta en alta fidelidad durante una captura: sin nodos estructurales el

@@ -41,12 +41,6 @@ public sealed class DesktopPreferencesService
         await SaveAsync(current with { AutoCaptureMeetings = enabled }, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task SetAutoHighFidelityAsync(bool enabled, CancellationToken cancellationToken = default)
-    {
-        var current = await ReadAsync(cancellationToken).ConfigureAwait(false);
-        await SaveAsync(current with { AutoHighFidelity = enabled }, cancellationToken).ConfigureAwait(false);
-    }
-
     private async Task SaveAsync(DesktopPreferences preferences, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
@@ -55,7 +49,7 @@ public sealed class DesktopPreferencesService
     }
 }
 
-public sealed record DesktopPreferences(bool AutoCaptureMeetings, bool AutoHighFidelity = true)
+public sealed record DesktopPreferences(bool AutoCaptureMeetings)
 {
-    public static DesktopPreferences Default { get; } = new(AutoCaptureMeetings: true, AutoHighFidelity: true);
+    public static DesktopPreferences Default { get; } = new(AutoCaptureMeetings: true);
 }
