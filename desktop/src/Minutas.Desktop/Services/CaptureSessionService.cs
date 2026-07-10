@@ -53,6 +53,10 @@ public sealed class CaptureSessionService
     public string? CurrentMeetingId => _state?.MeetingId;
     public string? DetectCurrentMeetingTitle() => _captions.GetCurrentMeetingTitle();
 
+    public bool IsTeamsMeetingActive() => _captions.GetStatus().MeetingActive;
+
+    public bool HasStructuralCaptions() => _captions.HasStructuralCaptions();
+
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         if (_state is not null)

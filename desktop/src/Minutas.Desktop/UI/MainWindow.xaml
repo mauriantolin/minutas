@@ -303,6 +303,7 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <Grid Grid.Row="0">
@@ -419,6 +420,31 @@
                            Foreground="{StaticResource MutedBrush}"
                            FontSize="12"
                            Margin="0,14,0,0" />
+
+                <Grid Grid.Row="5" Margin="0,14,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <TextBlock Text="Lectura de alta fidelidad"
+                                   FontWeight="SemiBold"
+                                   FontSize="13"
+                                   TextWrapping="Wrap" />
+                        <TextBlock x:Name="HighFidelityHintText"
+                                   Text="Reinicia Teams para leer cada subtítulo con su autor exacto. No cambia nada en tu sistema."
+                                   Foreground="{StaticResource MutedBrush}"
+                                   FontSize="12"
+                                   Margin="0,3,12,0"
+                                   TextWrapping="Wrap" />
+                    </StackPanel>
+                    <Button x:Name="HighFidelityButton"
+                            Grid.Column="1"
+                            Style="{StaticResource QuietButton}"
+                            VerticalAlignment="Center"
+                            Content="Reiniciar Teams"
+                            ToolTip="Cierra Teams y lo vuelve a abrir en modo alta fidelidad. Solo afecta a esa instancia de Teams: no modifica ninguna otra app ni deja nada configurado en Windows. No se puede hacer durante una reunión." />
+                </Grid>
             </Grid>
         </Border>
 

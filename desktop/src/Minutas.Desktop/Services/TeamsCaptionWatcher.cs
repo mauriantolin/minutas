@@ -72,6 +72,12 @@ public sealed class TeamsCaptionWatcher
         return GetActiveCaptionRoots(GetTeamsProcessIds()).Count > 0;
     }
 
+    /// <summary>True cuando el renderer expone los subtitulos como nodos UIA discretos.</summary>
+    public bool HasStructuralCaptions()
+    {
+        return GetActiveCaptionRoots(GetTeamsProcessIds()).Any(root => root.StructuralCaptions.Count > 0);
+    }
+
     public string? GetCurrentMeetingTitle()
     {
         return GetStatus().Title;
