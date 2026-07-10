@@ -133,25 +133,31 @@ function Get-StructuralCaptions {
   foreach ($b in $buttons) {
     $aid = Invoke-Safe { $b.Current.AutomationId } ""
     if ($aid -notmatch "captions") { continue }
-    $container = Invoke-Safe { $walker.GetParent($b) } $null
-    if ($null -eq $container) { continue }
+    $containers = @(
+      (Invoke-Safe { [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($b) } $null),
+      (Invoke-Safe { $walker.GetParent($b) } $null)
+    ) | Where-Object { $null -ne $_ }
+    foreach ($container in $containers) {
     $groups = Invoke-Safe { $container.FindAll([System.Windows.Automation.TreeScope]::Descendants, $grpCond) } $null
     if ($null -eq $groups) { continue }
     $items = @()
+    $txtCond = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
     foreach ($g in $groups) {
+      # FindAll(Children) walks the SAME tree view as the rest of the searches. Enumerating with
+      # RawViewWalker instead made this return nothing while the nodes were right there.
       $texts = @()
-      $c = Invoke-Safe { $walker.GetFirstChild($g) } $null
-      while ($null -ne $c) {
-        $isText = Invoke-Safe { $c.Current.ControlType -eq [System.Windows.Automation.ControlType]::Text } $false
-        if ($isText) {
+      $kids = Invoke-Safe { $g.FindAll([System.Windows.Automation.TreeScope]::Children, $txtCond) } $null
+      if ($null -ne $kids) {
+        foreach ($c in $kids) {
           $n = Invoke-Safe { $c.Current.Name } ""
           if (-not [string]::IsNullOrWhiteSpace($n)) { $texts += $n.Trim() }
         }
-        $c = Invoke-Safe { $walker.GetNextSibling($c) } $null
       }
       if ($texts.Count -ge 2) { $items += [pscustomobject]@{ controlType = "CaptionItem"; name = ("{0}: {1}" -f $texts[0], $texts[-1]) } }
     }
-    if ($items.Count -gt 0) { return $items }
+      if ($items.Count -gt 0) { return $items }
+    }
   }
   return @()
 }
@@ -216,11 +222,11 @@ try {
     Write-Host ("WINDOW: {0}" -f $item.Window)
     Write-Host ("  descendants of RootWebArea : {0}" -f $records.Count)
     Write-Host ("  with a non-empty Name      : {0}" -f $named.Count)
-    Write-Host ("  caption-ish (>=3 words)    : {0}" -f $captionish.Count)
+    Write-Host ("  caption items (author+text) : {0}" -f $captionish.Count)
     Write-Host ("  patternText length         : {0}" -f $pt.Length)
     Write-Host ("  VERDICT                    : {0}" -f $verdict) -ForegroundColor (@{FLAT = "Red"; PARTIAL = "Yellow"; STRUCTURAL = "Green" }[$verdict])
     if ($captionish.Count -gt 0) {
-      Write-Host "  sample caption-ish nodes:"
+      Write-Host "  sample caption items:"
       $captionish | Select-Object -First 5 | ForEach-Object { Write-Host ("    [{0}] {1}" -f $_.controlType, $_.name.Substring(0, [Math]::Min(80, $_.name.Length))) }
     }
   }

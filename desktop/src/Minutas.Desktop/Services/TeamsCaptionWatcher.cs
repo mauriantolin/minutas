@@ -210,16 +210,25 @@ public sealed class TeamsCaptionWatcher
                 continue;
             }
 
-            var container = Safe(() => TreeWalker.RawViewWalker.GetParent(button), null);
-            if (container is null)
+            // El padre se busca en la MISMA vista que usa FindAll (control), no en la cruda: en la
+            // vista cruda los Text del subtitulo no son hijos directos del item, y mezclarlas hacia
+            // que el lector devolviera vacio con los nodos delante. Raw queda solo como respaldo.
+            foreach (var container in new[]
+                     {
+                         Safe(() => TreeWalker.ControlViewWalker.GetParent(button), null),
+                         Safe(() => TreeWalker.RawViewWalker.GetParent(button), null),
+                     })
             {
-                continue;
-            }
+                if (container is null)
+                {
+                    continue;
+                }
 
-            var captions = ExtractCaptionItems(container);
-            if (captions.Count > 0)
-            {
-                return captions;
+                var captions = ExtractCaptionItems(container);
+                if (captions.Count > 0)
+                {
+                    return captions;
+                }
             }
         }
 
@@ -240,12 +249,7 @@ public sealed class TeamsCaptionWatcher
         {
             // Un enunciado es el unico Group con >= 2 Text hijos directos (autor y texto).
             // El badge es un Group sin Text hijos, y la lista solo contiene Groups.
-            var texts = GetChildren(group)
-                .Where(child => Safe(() => child.Current.ControlType == ControlType.Text, false))
-                .Select(child => Safe(() => child.Current.Name, "").Trim())
-                .Where(name => name.Length > 0)
-                .ToArray();
-
+            var texts = GetTextChildren(group);
             if (texts.Length < 2)
             {
                 continue;
@@ -257,16 +261,18 @@ public sealed class TeamsCaptionWatcher
         return items;
     }
 
-    private static IEnumerable<AutomationElement> GetChildren(AutomationElement element)
+    // FindAll(Children) recorre la misma vista del arbol que el resto de las busquedas.
+    private static string[] GetTextChildren(AutomationElement element)
     {
-        var walker = TreeWalker.RawViewWalker;
-        var child = Safe(() => walker.GetFirstChild(element), null);
-        while (child is not null)
-        {
-            yield return child;
-            var current = child;
-            child = Safe(() => walker.GetNextSibling(current), null);
-        }
+        return Safe(
+            () => element.FindAll(
+                TreeScope.Children,
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text))
+                .Cast<AutomationElement>()
+                .Select(child => Safe(() => child.Current.Name, "").Trim())
+                .Where(name => name.Length > 0)
+                .ToArray(),
+            Array.Empty<string>());
     }
 
     // Aprende dos señales dinámicas por poll, independientes de nombre/idioma/tenant:

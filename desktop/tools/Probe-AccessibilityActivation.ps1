@@ -174,24 +174,31 @@ function Get-StructuralCaptions {
   foreach ($b in $buttons) {
     $aid = Invoke-Safe { $b.Current.AutomationId } ""
     if ($aid -notmatch "captions") { continue }
-    $container = Invoke-Safe { $walker.GetParent($b) } $null
-    if ($null -eq $container) { continue }
+    $containers = @(
+      (Invoke-Safe { [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($b) } $null),
+      (Invoke-Safe { $walker.GetParent($b) } $null)
+    ) | Where-Object { $null -ne $_ }
+    foreach ($container in $containers) {
     $groups = Invoke-Safe { $container.FindAll([System.Windows.Automation.TreeScope]::Descendants, $grpCond) } $null
     if ($null -eq $groups) { continue }
     $items = @()
+    $txtCond = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
     foreach ($g in $groups) {
+      # FindAll(Children) walks the SAME tree view as the rest of the searches. Enumerating with
+      # RawViewWalker instead made this return nothing while the nodes were right there.
       $texts = @()
-      $c = Invoke-Safe { $walker.GetFirstChild($g) } $null
-      while ($null -ne $c) {
-        if (Invoke-Safe { $c.Current.ControlType -eq [System.Windows.Automation.ControlType]::Text } $false) {
+      $kids = Invoke-Safe { $g.FindAll([System.Windows.Automation.TreeScope]::Children, $txtCond) } $null
+      if ($null -ne $kids) {
+        foreach ($c in $kids) {
           $n = Invoke-Safe { $c.Current.Name } ""
           if (-not [string]::IsNullOrWhiteSpace($n)) { $texts += $n.Trim() }
         }
-        $c = Invoke-Safe { $walker.GetNextSibling($c) } $null
       }
       if ($texts.Count -ge 2) { $items += [pscustomobject]@{ speaker = $texts[0]; text = $texts[-1] } }
     }
-    if ($items.Count -gt 0) { return $items }
+      if ($items.Count -gt 0) { return $items }
+    }
   }
   return @()
 }
