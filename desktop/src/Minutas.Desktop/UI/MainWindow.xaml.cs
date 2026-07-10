@@ -437,7 +437,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var confirm = MessageBox.Show(
+        var confirm = System.Windows.MessageBox.Show(
             "Se va a cerrar Teams y abrirlo de nuevo en modo alta fidelidad.\n\n" +
             "Solo afecta a esa instancia de Teams. No modifica ninguna otra aplicación " +
             "ni deja nada configurado en Windows.\n\n" +
