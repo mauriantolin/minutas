@@ -7,37 +7,72 @@
         Height="680"
         MinWidth="378"
         MaxWidth="460"
-        MinHeight="620"
-        ResizeMode="CanResizeWithGrip"
+        MinHeight="560"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ResizeMode="CanResize"
         WindowStartupLocation="CenterScreen"
-        Background="#08090D"
-        Foreground="#FAFAFF"
         FontFamily="Segoe UI">
     <Window.Resources>
-        <SolidColorBrush x:Key="BgBrush" Color="#08090D" />
-        <SolidColorBrush x:Key="SurfaceBrush" Color="#0E0F16" />
-        <SolidColorBrush x:Key="PanelBrush" Color="#11121A" />
-        <SolidColorBrush x:Key="BorderBrushSoft" Color="#2B2C39" />
-        <SolidColorBrush x:Key="TextBrush" Color="#FAFAFF" />
-        <SolidColorBrush x:Key="MutedBrush" Color="#B7B1D8" />
-        <SolidColorBrush x:Key="SubtleBrush" Color="#88829E" />
-        <SolidColorBrush x:Key="PrimaryBrush" Color="#635BFF" />
-        <SolidColorBrush x:Key="PrimaryHoverBrush" Color="#756EFF" />
-        <SolidColorBrush x:Key="AccentBrush" Color="#292780" />
-        <SolidColorBrush x:Key="DangerBrush" Color="#EF4444" />
-        <SolidColorBrush x:Key="OkBrush" Color="#10D897" />
-
         <Style TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
             <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+        </Style>
+
+        <Style x:Key="TitleBarButton" TargetType="Button">
+            <Setter Property="Width" Value="32" />
+            <Setter Property="Height" Value="32" />
+            <Setter Property="Foreground" Value="{DynamicResource MutedBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="8">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HoverBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="CloseBarButton" TargetType="Button" BasedOn="{StaticResource TitleBarButton}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="8">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource DangerBrush}" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="BaseButton" TargetType="Button">
             <Setter Property="Height" Value="42" />
             <Setter Property="Padding" Value="14,0" />
-            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
-            <Setter Property="Background" Value="{StaticResource PanelBrush}" />
-            <Setter Property="BorderBrush" Value="{StaticResource BorderBrushSoft}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrushSoft}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Cursor" Value="Hand" />
@@ -55,7 +90,7 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Border" Property="Background" Value="#1A1B26" />
+                                <Setter TargetName="Border" Property="Background" Value="{DynamicResource HoverBrush}" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.45" />
@@ -67,28 +102,46 @@
         </Style>
 
         <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource BaseButton}">
-            <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
-            <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}" />
+            <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
             <Setter Property="Foreground" Value="White" />
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="{StaticResource PrimaryHoverBrush}" />
-                    <Setter Property="BorderBrush" Value="{StaticResource PrimaryHoverBrush}" />
-                </Trigger>
-            </Style.Triggers>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Border"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Border" Property="Background" Value="{DynamicResource PrimaryHoverBrush}" />
+                                <Setter TargetName="Border" Property="BorderBrush" Value="{DynamicResource PrimaryHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="QuietButton" TargetType="Button" BasedOn="{StaticResource BaseButton}">
             <Setter Property="Height" Value="34" />
             <Setter Property="Padding" Value="12,0" />
-            <Setter Property="Background" Value="#14151E" />
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}" />
             <Setter Property="FontSize" Value="12" />
         </Style>
 
         <Style x:Key="LinkButton" TargetType="Button">
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource MutedBrush}" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Padding" Value="0" />
             <Setter Property="HorizontalContentAlignment" Value="Right" />
@@ -97,25 +150,25 @@
         <Style x:Key="InputBox" TargetType="TextBox">
             <Setter Property="Height" Value="40" />
             <Setter Property="Padding" Value="12,8" />
-            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
-            <Setter Property="Background" Value="#0A0B10" />
-            <Setter Property="BorderBrush" Value="{StaticResource BorderBrushSoft}" />
-            <Setter Property="CaretBrush" Value="{StaticResource TextBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="Background" Value="{DynamicResource InputBgBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrushSoft}" />
+            <Setter Property="CaretBrush" Value="{DynamicResource TextBrush}" />
         </Style>
 
         <Style x:Key="PasswordInputBox" TargetType="PasswordBox">
             <Setter Property="Height" Value="40" />
             <Setter Property="Padding" Value="12,8" />
-            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
-            <Setter Property="Background" Value="#0A0B10" />
-            <Setter Property="BorderBrush" Value="{StaticResource BorderBrushSoft}" />
-            <Setter Property="CaretBrush" Value="{StaticResource TextBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="Background" Value="{DynamicResource InputBgBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrushSoft}" />
+            <Setter Property="CaretBrush" Value="{DynamicResource TextBrush}" />
         </Style>
 
         <Style TargetType="ToolTip">
-            <Setter Property="Background" Value="#171824" />
-            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
-            <Setter Property="BorderBrush" Value="{StaticResource BorderBrushSoft}" />
+            <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrushSoft}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Padding" Value="10,8" />
             <Setter Property="MaxWidth" Value="300" />
@@ -132,20 +185,18 @@
                                 Width="48"
                                 Height="28"
                                 CornerRadius="14"
-                                Background="#242532"
-                                BorderBrush="{StaticResource BorderBrushSoft}"
-                                BorderThickness="1">
+                                Background="{DynamicResource SubtleBrush}"
+                                BorderThickness="0">
                             <Ellipse x:Name="Thumb"
                                      Width="20"
                                      Height="20"
                                      Margin="4"
                                      HorizontalAlignment="Left"
-                                     Fill="#FAFAFF" />
+                                     Fill="White" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="Track" Property="Background" Value="{StaticResource PrimaryBrush}" />
-                                <Setter TargetName="Track" Property="BorderBrush" Value="{StaticResource PrimaryBrush}" />
+                                <Setter TargetName="Track" Property="Background" Value="{DynamicResource PrimaryBrush}" />
                                 <Setter TargetName="Thumb" Property="HorizontalAlignment" Value="Right" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
@@ -158,8 +209,8 @@
         </Style>
 
         <Style TargetType="ListBox">
-            <Setter Property="Background" Value="#101119" />
-            <Setter Property="BorderBrush" Value="{StaticResource BorderBrushSoft}" />
+            <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrushSoft}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
         </Style>
@@ -168,23 +219,23 @@
             <Setter Property="MinHeight" Value="36" />
             <Setter Property="Padding" Value="0" />
             <Setter Property="Background" Value="Transparent" />
-            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ListBoxItem">
                         <Border x:Name="Row"
                                 Background="{TemplateBinding Background}"
-                                BorderBrush="#222331"
+                                BorderBrush="{DynamicResource BorderBrushSoft}"
                                 BorderThickness="0,0,0,1">
                             <ContentPresenter />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Row" Property="Background" Value="#171827" />
+                                <Setter TargetName="Row" Property="Background" Value="{DynamicResource HoverBrush}" />
                             </Trigger>
                             <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="Row" Property="Background" Value="#27235F" />
+                                <Setter TargetName="Row" Property="Background" Value="{DynamicResource AccentBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -193,113 +244,69 @@
         </Style>
     </Window.Resources>
 
-    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-    <Grid Margin="16">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
+    <Border Margin="12"
+            CornerRadius="14"
+            Background="{DynamicResource BgBrush}"
+            BorderBrush="{DynamicResource BorderBrushSoft}"
+            BorderThickness="1">
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="24" ShadowDepth="0" Opacity="0.28" Color="Black" />
+        </Border.Effect>
 
-        <Grid Grid.Row="0" Margin="0,6,0,14">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-            <StackPanel>
-                <Image Source="/Assets/minutix-logo-cropped.png"
-                       Width="148"
-                       Height="49"
-                       Stretch="Uniform"
-                       HorizontalAlignment="Left"
-                       Margin="-5,-7,0,-7" />
-                <TextBlock Text="Teams Desktop companion" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,4,0,0" />
-            </StackPanel>
-            <Ellipse x:Name="HeaderStatusDot"
-                     Grid.Column="1"
-                     Width="8"
-                     Height="8"
-                     Fill="{StaticResource SubtleBrush}"
-                     VerticalAlignment="Top"
-                     Margin="0,8,4,0" />
-        </Grid>
-
-        <Grid x:Name="LoginPanel" Grid.Row="1" Margin="0,0,0,14">
+        <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
             </Grid.RowDefinitions>
-            <Grid Grid.Row="0" Margin="0,0,0,8">
-                <TextBox x:Name="EmailBox"
-                         Style="{StaticResource InputBox}" />
-                <TextBlock x:Name="EmailPlaceholder"
-                           Text="Email"
-                           Foreground="{StaticResource SubtleBrush}"
-                           Margin="13,0,0,0"
-                           VerticalAlignment="Center"
-                           IsHitTestVisible="False" />
-            </Grid>
-            <Grid Grid.Row="1" Margin="0,0,0,10">
-                <PasswordBox x:Name="PasswordBox"
-                             Style="{StaticResource PasswordInputBox}" />
-                <TextBlock x:Name="PasswordPlaceholder"
-                           Text="Contraseña"
-                           Foreground="{StaticResource SubtleBrush}"
-                           Margin="13,0,0,0"
-                           VerticalAlignment="Center"
-                           IsHitTestVisible="False" />
-            </Grid>
-            <Button x:Name="SignInButton"
-                    Grid.Row="2"
-                    Style="{StaticResource PrimaryButton}"
-                    Content="Entrar" />
-        </Grid>
 
-        <Grid x:Name="AccountPanel" Grid.Row="1" Margin="0,0,0,14" Visibility="Collapsed">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="38" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-            <Border Width="30"
-                    Height="30"
-                    CornerRadius="4"
-                    Background="{StaticResource AccentBrush}"
-                    VerticalAlignment="Center">
-                <TextBlock x:Name="AvatarText"
-                           Text="M"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center"
-                           Foreground="#D8D3FF"
-                           FontWeight="Bold" />
-            </Border>
-            <TextBlock x:Name="AccountEmailText"
-                       Grid.Column="1"
-                       VerticalAlignment="Center"
-                       TextTrimming="CharacterEllipsis"
-                       FontSize="14" />
-            <Button x:Name="SignOutButton"
-                    Grid.Column="2"
-                    Style="{StaticResource LinkButton}"
-                    Content="Salir" />
-        </Grid>
+            <!-- Custom title bar: drag anywhere, logo left, window buttons right. -->
+            <Grid x:Name="TitleBar"
+                  Grid.Row="0"
+                  Background="Transparent"
+                  Margin="16,10,8,2"
+                  MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
 
-        <Border Grid.Row="2"
-                Background="{StaticResource SurfaceBrush}"
-                BorderBrush="{StaticResource BorderBrushSoft}"
-                BorderThickness="1"
-                CornerRadius="10"
-                Padding="14"
-                Margin="0,0,0,14">
-            <Grid>
+                <Image Grid.Column="0"
+                       Source="/Assets/minutix-logo-cropped.png"
+                       Height="26"
+                       Stretch="Uniform"
+                       HorizontalAlignment="Left"
+                       VerticalAlignment="Center" />
+
+                <Ellipse x:Name="HeaderStatusDot"
+                         Grid.Column="2"
+                         Width="8"
+                         Height="8"
+                         Fill="{DynamicResource SubtleBrush}"
+                         VerticalAlignment="Center"
+                         Margin="0,0,6,0" />
+
+                <Button x:Name="MinimizeButton"
+                        Grid.Column="3"
+                        Style="{StaticResource TitleBarButton}"
+                        Content="&#x2015;"
+                        ToolTip="Minimizar"
+                        Click="MinimizeButton_Click" />
+
+                <Button x:Name="CloseButton"
+                        Grid.Column="4"
+                        Style="{StaticResource CloseBarButton}"
+                        Content="&#x2715;"
+                        ToolTip="Cerrar a la bandeja"
+                        Click="CloseButton_Click" />
+            </Grid>
+
+            <Grid Grid.Row="1" Margin="16,6,16,16">
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
@@ -308,317 +315,374 @@
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <Grid Grid.Row="0">
-                    <TextBlock Text="Captura automática (subtítulos de Teams)"
-                               FontWeight="Bold"
-                               FontSize="15"
-                               TextWrapping="Wrap"
-                               Margin="0" />
-                </Grid>
-
-                <Grid Grid.Row="1" Margin="0,14,0,14">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-                    <Border Width="22"
-                            Height="22"
-                            CornerRadius="11"
-                            Background="#1B1C28"
-                            BorderBrush="{StaticResource BorderBrushSoft}"
-                            BorderThickness="1"
-                            VerticalAlignment="Top"
-                            Margin="0,1,8,0"
-                            ToolTip="Crea una reunión en Minutix, lee los subtítulos de Teams Desktop por accesibilidad de Windows y envía segmentos en vivo. No graba audio.">
-                        <TextBlock Text="?"
-                                   HorizontalAlignment="Center"
-                                   VerticalAlignment="Center"
-                                   FontWeight="Bold"
-                                   FontSize="12"
-                                   Foreground="{StaticResource MutedBrush}" />
-                    </Border>
-                    <TextBlock Grid.Column="1"
-                               Text="Lee subtítulos en vivo de Teams Desktop, incluso minimizado. No graba audio."
-                               Foreground="{StaticResource MutedBrush}"
-                               FontSize="12.5"
-                               TextWrapping="Wrap"
-                               LineHeight="18" />
-                </Grid>
-
-                <Grid x:Name="AutoCaptureRow" Grid.Row="2" Margin="0,0,0,14">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <StackPanel>
-                        <TextBlock Text="Captura automática al entrar a una reunión"
-                                   FontWeight="SemiBold"
-                                   FontSize="13"
-                                   TextWrapping="Wrap" />
-                        <TextBlock x:Name="AutoCaptureHintText"
-                                   Text="Detecta una llamada de Teams Desktop y empieza a transcribir."
-                                   Foreground="{StaticResource MutedBrush}"
-                                   FontSize="12"
-                                   Margin="0,3,12,0"
-                                   TextWrapping="Wrap" />
-                    </StackPanel>
-                    <CheckBox x:Name="AutoCaptureMeetingsCheckBox"
-                              Grid.Column="1"
-                              Style="{StaticResource SwitchCheckBox}"
-                              VerticalAlignment="Center"
-                              ToolTip="Cuando está activo, Minutix mira si aparece una reunión de Teams Desktop y arranca la captura de subtítulos automáticamente." />
-                </Grid>
-
-                <Button x:Name="StartButton"
-                        Grid.Row="3"
-                        Style="{StaticResource PrimaryButton}"
-                        Content="● Empezar a transcribir"
-                        ToolTip="Inicia la captura de subtítulos visibles en Teams Desktop." />
-
-                <Grid x:Name="CapturingPanel" Grid.Row="3" Visibility="Collapsed">
+                <Grid x:Name="LoginPanel" Grid.Row="0" Margin="0,0,0,14">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
+                    <Grid Grid.Row="0" Margin="0,0,0,8">
+                        <TextBox x:Name="EmailBox"
+                                 Style="{StaticResource InputBox}" />
+                        <TextBlock x:Name="EmailPlaceholder"
+                                   Text="Email"
+                                   Foreground="{DynamicResource SubtleBrush}"
+                                   Margin="13,0,0,0"
+                                   VerticalAlignment="Center"
+                                   IsHitTestVisible="False" />
+                    </Grid>
+                    <Grid Grid.Row="1" Margin="0,0,0,10">
+                        <PasswordBox x:Name="PasswordBox"
+                                     Style="{StaticResource PasswordInputBox}" />
+                        <TextBlock x:Name="PasswordPlaceholder"
+                                   Text="Contraseña"
+                                   Foreground="{DynamicResource SubtleBrush}"
+                                   Margin="13,0,0,0"
+                                   VerticalAlignment="Center"
+                                   IsHitTestVisible="False" />
+                    </Grid>
+                    <Button x:Name="SignInButton"
+                            Grid.Row="2"
+                            Style="{StaticResource PrimaryButton}"
+                            Content="Entrar" />
+                </Grid>
 
+                <Grid x:Name="AccountPanel" Grid.Row="0" Margin="0,0,0,14" Visibility="Collapsed">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="38" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Border Width="30"
+                            Height="30"
+                            CornerRadius="8"
+                            Background="{DynamicResource AccentBrush}"
+                            VerticalAlignment="Center">
+                        <TextBlock x:Name="AvatarText"
+                                   Text="M"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Foreground="{DynamicResource PrimaryBrush}"
+                                   FontWeight="Bold" />
+                    </Border>
+                    <TextBlock x:Name="AccountEmailText"
+                               Grid.Column="1"
+                               VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"
+                               FontSize="14" />
+                    <Button x:Name="SignOutButton"
+                            Grid.Column="2"
+                            Style="{StaticResource LinkButton}"
+                            Content="Salir" />
+                </Grid>
+
+                <Border Grid.Row="1"
+                        Background="{DynamicResource SurfaceBrush}"
+                        BorderBrush="{DynamicResource BorderBrushSoft}"
+                        BorderThickness="1"
+                        CornerRadius="12"
+                        Padding="14"
+                        Margin="0,0,0,12">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0" Orientation="Horizontal">
+                            <TextBlock Text="Captura"
+                                       FontWeight="Bold"
+                                       FontSize="15"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="&#x24D8;"
+                                       FontSize="14"
+                                       Foreground="{DynamicResource MutedBrush}"
+                                       Margin="7,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Cursor="Help"
+                                       ToolTip="Lee subtítulos en vivo de Teams Desktop, incluso minimizado. No graba audio." />
+                        </StackPanel>
+
+                        <Grid x:Name="AutoCaptureRow" Grid.Row="1" Margin="0,14,0,14">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Automática"
+                                           FontWeight="SemiBold"
+                                           FontSize="13" />
+                                <TextBlock x:Name="AutoCaptureHintText"
+                                           Text="Detecta una llamada de Teams Desktop y empieza a transcribir."
+                                           Foreground="{DynamicResource MutedBrush}"
+                                           FontSize="12"
+                                           Margin="0,3,12,0"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                            <CheckBox x:Name="AutoCaptureMeetingsCheckBox"
+                                      Grid.Column="1"
+                                      Style="{StaticResource SwitchCheckBox}"
+                                      VerticalAlignment="Center"
+                                      ToolTip="Cuando está activo, Minutix mira si aparece una reunión de Teams Desktop y arranca la captura de subtítulos automáticamente." />
+                        </Grid>
+
+                        <Button x:Name="StartButton"
+                                Grid.Row="2"
+                                Style="{StaticResource PrimaryButton}"
+                                Content="&#x25B6; Transcribir"
+                                ToolTip="Inicia la captura de subtítulos visibles en Teams Desktop." />
+
+                        <Grid x:Name="CapturingPanel" Grid.Row="2" Visibility="Collapsed">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Ellipse Width="8" Height="8" Fill="{DynamicResource DangerBrush}" Margin="0,0,8,0">
+                                        <Ellipse.Triggers>
+                                            <EventTrigger RoutedEvent="Ellipse.Loaded">
+                                                <BeginStoryboard>
+                                                    <Storyboard RepeatBehavior="Forever" AutoReverse="True">
+                                                        <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                         From="1" To="0.3" Duration="0:0:0.9" />
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </EventTrigger>
+                                        </Ellipse.Triggers>
+                                    </Ellipse>
+                                    <TextBlock Text="En vivo" FontWeight="SemiBold" />
+                                    <TextBlock Text=" · " Foreground="{DynamicResource MutedBrush}" />
+                                    <TextBlock x:Name="ElapsedText" Text="00:00" Foreground="{DynamicResource MutedBrush}" />
+                                </StackPanel>
+                                <Button x:Name="OpenLiveButton"
+                                        Grid.Column="1"
+                                        Style="{StaticResource LinkButton}"
+                                        Content="Abrir en el navegador"
+                                        ToolTip="Abre el panel web de esta reunión." />
+                            </Grid>
+
+                            <Border Grid.Row="1"
+                                    Margin="0,12,0,0"
+                                    Background="{DynamicResource PanelBrush}"
+                                    BorderBrush="{DynamicResource BorderBrushSoft}"
+                                    BorderThickness="1"
+                                    CornerRadius="10">
+                                <!-- Altura fija: la fila padre es Auto, asi que sin una altura concreta el
+                                     ScrollViewer crece con el contenido y nunca muestra scroll. -->
+                                <ScrollViewer x:Name="TranscriptScroll"
+                                              Height="300"
+                                              VerticalScrollBarVisibility="Auto"
+                                              CanContentScroll="False"
+                                              Padding="12,10">
+                                    <ItemsControl x:Name="TranscriptList">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="0,0,0,11">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="{Binding Speaker}"
+                                                                   FontWeight="SemiBold"
+                                                                   FontSize="12.5"
+                                                                   Foreground="{Binding Color}"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Text="{Binding Meta}"
+                                                                   FontSize="11"
+                                                                   Foreground="{DynamicResource SubtleBrush}"
+                                                                   Margin="8,0,0,0"
+                                                                   VerticalAlignment="Center" />
+                                                    </StackPanel>
+                                                    <TextBlock Text="{Binding Text}"
+                                                               FontSize="13"
+                                                               LineHeight="19"
+                                                               Margin="0,1,0,0"
+                                                               TextWrapping="Wrap"
+                                                               Foreground="{DynamicResource TextBrush}" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Border>
+
+                            <Grid Grid.Row="2" Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="10" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="StopButton"
+                                        Style="{StaticResource PrimaryButton}"
+                                        Height="38"
+                                        Content="Detener"
+                                        ToolTip="Finaliza la captura y pide el resumen al backend." />
+                                <Button x:Name="CancelButton"
+                                        Grid.Column="2"
+                                        Style="{StaticResource QuietButton}"
+                                        Content="Descartar"
+                                        ToolTip="Detiene esta captura sin finalizar la reunión." />
+                            </Grid>
+                        </Grid>
+
+                        <TextBlock x:Name="ModeText"
+                                   Grid.Row="3"
+                                   Text="Modo: Subtítulos de Teams Desktop"
+                                   Foreground="{DynamicResource MutedBrush}"
+                                   FontSize="12"
+                                   Margin="0,14,0,0" />
+
+                        <Grid x:Name="HighFidelityRow" Grid.Row="4" Margin="0,14,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Alta fidelidad"
+                                           FontWeight="SemiBold"
+                                           FontSize="13" />
+                                <TextBlock x:Name="HighFidelityHintText"
+                                           Text="Cada subtítulo con su autor exacto."
+                                           Foreground="{DynamicResource MutedBrush}"
+                                           FontSize="12"
+                                           Margin="0,3,12,0"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                            <Button x:Name="HighFidelityButton"
+                                    Grid.Column="1"
+                                    Style="{StaticResource QuietButton}"
+                                    VerticalAlignment="Center"
+                                    Content="Reiniciar"
+                                    ToolTip="Cierra Teams y lo vuelve a abrir en modo alta fidelidad. Solo afecta a esa instancia de Teams: no modifica ninguna otra app ni deja nada configurado en Windows. No se puede hacer durante una reunión." />
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <Border x:Name="StartupCard"
+                        Grid.Row="2"
+                        Background="{DynamicResource SurfaceBrush}"
+                        BorderBrush="{DynamicResource BorderBrushSoft}"
+                        BorderThickness="1"
+                        CornerRadius="12"
+                        Padding="12"
+                        Margin="0,0,0,12">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <Ellipse Width="8" Height="8" Fill="{StaticResource DangerBrush}" Margin="0,0,8,0">
-                                <Ellipse.Triggers>
-                                    <EventTrigger RoutedEvent="Ellipse.Loaded">
-                                        <BeginStoryboard>
-                                            <Storyboard RepeatBehavior="Forever" AutoReverse="True">
-                                                <DoubleAnimation Storyboard.TargetProperty="Opacity"
-                                                                 From="1" To="0.3" Duration="0:0:0.9" />
-                                            </Storyboard>
-                                        </BeginStoryboard>
-                                    </EventTrigger>
-                                </Ellipse.Triggers>
-                            </Ellipse>
-                            <TextBlock Text="En vivo" FontWeight="SemiBold" />
-                            <TextBlock Text=" · " Foreground="{StaticResource MutedBrush}" />
-                            <TextBlock x:Name="ElapsedText" Text="00:00" Foreground="{StaticResource MutedBrush}" />
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="Iniciar con Windows"
+                                       FontWeight="SemiBold"
+                                       FontSize="13" />
+                            <TextBlock x:Name="StartupHintText"
+                                       Text="Se abre minimizado en la bandeja."
+                                       Foreground="{DynamicResource MutedBrush}"
+                                       FontSize="12"
+                                       Margin="0,3,12,0"
+                                       TextWrapping="Wrap" />
                         </StackPanel>
-                        <Button x:Name="OpenLiveButton"
-                                Grid.Column="1"
-                                Style="{StaticResource LinkButton}"
-                                Content="Abrir en el navegador"
-                                ToolTip="Abre el panel web de esta reunión." />
+                        <CheckBox x:Name="StartupWithWindowsCheckBox"
+                                  Grid.Column="1"
+                                  Style="{StaticResource SwitchCheckBox}"
+                                  VerticalAlignment="Center"
+                                  ToolTip="Activa o desactiva el inicio automático de Minutix para tu usuario de Windows." />
                     </Grid>
+                </Border>
 
-                    <Border Grid.Row="1"
-                            Margin="0,12,0,0"
-                            Background="{StaticResource BgBrush}"
-                            BorderBrush="{StaticResource BorderBrushSoft}"
-                            BorderThickness="1"
-                            CornerRadius="10">
-                        <!-- Altura fija: la fila padre es Auto, asi que sin una altura concreta el
-                             ScrollViewer crece con el contenido y nunca muestra scroll. -->
-                        <ScrollViewer x:Name="TranscriptScroll"
-                                      Height="300"
-                                      VerticalScrollBarVisibility="Auto"
-                                      CanContentScroll="False"
-                                      Padding="12,10">
-                            <ItemsControl x:Name="TranscriptList">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <StackPanel Margin="0,0,0,11">
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="{Binding Speaker}"
-                                                           FontWeight="SemiBold"
-                                                           FontSize="12.5"
-                                                           Foreground="{Binding Color}"
-                                                           TextTrimming="CharacterEllipsis" />
-                                                <TextBlock Text="{Binding Meta}"
-                                                           FontSize="11"
-                                                           Foreground="{StaticResource SubtleBrush}"
-                                                           Margin="8,0,0,0"
-                                                           VerticalAlignment="Center" />
-                                            </StackPanel>
-                                            <TextBlock Text="{Binding Text}"
-                                                       FontSize="13"
-                                                       LineHeight="19"
-                                                       Margin="0,1,0,0"
-                                                       TextWrapping="Wrap"
-                                                       Foreground="{StaticResource TextBrush}" />
-                                        </StackPanel>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </ScrollViewer>
-                    </Border>
+                <TextBlock x:Name="StatusText"
+                           Grid.Row="3"
+                           Text="Listo."
+                           Foreground="{DynamicResource MutedBrush}"
+                           FontSize="12"
+                           Margin="0,0,0,8" />
 
-                    <Grid Grid.Row="2" Margin="0,12,0,0">
+                <TextBlock x:Name="ActivityTitle"
+                           Grid.Row="4"
+                           Text="Últimas reuniones"
+                           FontWeight="Bold"
+                           Foreground="{DynamicResource TextBrush}"
+                           Margin="0,0,0,8" />
+
+                <ListBox x:Name="ActivityList"
+                         Grid.Row="5"
+                         MaxHeight="220"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                         MouseDoubleClick="ActivityList_MouseDoubleClick">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Height="36" Margin="8,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding Title}"
+                                           VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}"
+                                           Margin="0,0,10,0" />
+                                <TextBlock Grid.Column="1"
+                                           Text="{Binding Meta}"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource MutedBrush}"
+                                           FontSize="12" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <Button x:Name="OpenPanelButton"
+                        Grid.Row="6"
+                        Content="Abrir panel →"
+                        Style="{StaticResource LinkButton}"
+                        HorizontalAlignment="Right"
+                        Margin="0,10,4,4" />
+
+                <Border x:Name="UpdateCard"
+                        Grid.Row="7"
+                        Background="{DynamicResource SurfaceBrush}"
+                        BorderBrush="{DynamicResource BorderBrushSoft}"
+                        BorderThickness="1"
+                        CornerRadius="12"
+                        Padding="12"
+                        Margin="0,4,0,0">
+                    <Grid>
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="10" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <Button x:Name="StopButton"
-                                Style="{StaticResource PrimaryButton}"
-                                Height="38"
-                                Content="Detener y resumir"
-                                ToolTip="Finaliza la captura y pide el resumen al backend." />
-                        <Button x:Name="CancelButton"
-                                Grid.Column="2"
-                                Style="{StaticResource QuietButton}"
-                                Content="Descartar"
-                                ToolTip="Detiene esta captura sin finalizar la reunión." />
-                    </Grid>
-                </Grid>
-
-                <TextBlock x:Name="ModeText"
-                           Grid.Row="4"
-                           Text="Modo: Subtítulos de Teams Desktop"
-                           Foreground="{StaticResource MutedBrush}"
-                           FontSize="12"
-                           Margin="0,14,0,0" />
-
-                <Grid x:Name="HighFidelityRow" Grid.Row="5" Margin="0,14,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <StackPanel>
-                        <TextBlock Text="Lectura de alta fidelidad"
+                        <TextBlock Grid.Column="0"
+                                   Text="Actualizaciones"
                                    FontWeight="SemiBold"
                                    FontSize="13"
-                                   TextWrapping="Wrap" />
-                        <TextBlock x:Name="HighFidelityHintText"
-                                   Text="Reinicia Teams para leer cada subtítulo con su autor exacto. No cambia nada en tu sistema."
-                                   Foreground="{StaticResource MutedBrush}"
+                                   VerticalAlignment="Center" />
+                        <TextBlock x:Name="VersionText"
+                                   Grid.Column="1"
+                                   Text="Versión —"
+                                   Foreground="{DynamicResource MutedBrush}"
                                    FontSize="12"
-                                   Margin="0,3,12,0"
-                                   TextWrapping="Wrap" />
-                    </StackPanel>
-                    <Button x:Name="HighFidelityButton"
-                            Grid.Column="1"
-                            Style="{StaticResource QuietButton}"
-                            VerticalAlignment="Center"
-                            Content="Reiniciar Teams"
-                            ToolTip="Cierra Teams y lo vuelve a abrir en modo alta fidelidad. Solo afecta a esa instancia de Teams: no modifica ninguna otra app ni deja nada configurado en Windows. No se puede hacer durante una reunión." />
-                </Grid>
-            </Grid>
-        </Border>
-
-        <Border x:Name="StartupCard"
-                Grid.Row="3"
-                Background="{StaticResource SurfaceBrush}"
-                BorderBrush="{StaticResource BorderBrushSoft}"
-                BorderThickness="1"
-                CornerRadius="10"
-                Padding="12"
-                Margin="0,0,0,12">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <StackPanel>
-                    <TextBlock Text="Iniciar Minutix con Windows"
-                               FontWeight="SemiBold"
-                               FontSize="13" />
-                    <TextBlock x:Name="StartupHintText"
-                               Text="Se abre minimizado en la bandeja."
-                               Foreground="{StaticResource MutedBrush}"
-                               FontSize="12"
-                               Margin="0,3,0,0" />
-                </StackPanel>
-                <CheckBox x:Name="StartupWithWindowsCheckBox"
-                          Grid.Column="1"
-                          Style="{StaticResource SwitchCheckBox}"
-                          VerticalAlignment="Center"
-                          ToolTip="Activa o desactiva el inicio automático de Minutix para tu usuario de Windows." />
-            </Grid>
-        </Border>
-
-        <Border x:Name="UpdateCard"
-                Grid.Row="8"
-                Background="{StaticResource SurfaceBrush}"
-                BorderBrush="{StaticResource BorderBrushSoft}"
-                BorderThickness="1"
-                CornerRadius="10"
-                Padding="12"
-                Margin="0,10,0,0">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <StackPanel VerticalAlignment="Center">
-                    <TextBlock Text="Actualizaciones"
-                               FontWeight="SemiBold"
-                               FontSize="13" />
-                    <TextBlock x:Name="VersionText"
-                               Text="Versión —"
-                               Foreground="{StaticResource MutedBrush}"
-                               FontSize="12"
-                               Margin="0,3,12,0"
-                               TextWrapping="Wrap" />
-                </StackPanel>
-                <Button x:Name="UpdateButton"
-                        Grid.Column="1"
-                        Style="{StaticResource QuietButton}"
-                        VerticalAlignment="Center"
-                        Content="Buscar actualizaciones"
-                        ToolTip="Comprueba si hay una versión nueva y la descarga. Te avisa antes de reiniciar." />
-            </Grid>
-        </Border>
-
-        <TextBlock x:Name="StatusText"
-                   Grid.Row="4"
-                   Text="Listo."
-                   Foreground="{StaticResource MutedBrush}"
-                   FontSize="12"
-                   Margin="0,0,0,8" />
-
-        <TextBlock x:Name="ActivityTitle"
-                   Grid.Row="5"
-                   Text="Últimas reuniones"
-                   FontWeight="Bold"
-                   Foreground="#CBC6FF"
-                   Margin="0,0,0,8" />
-
-        <ListBox x:Name="ActivityList"
-                 Grid.Row="6"
-                 MaxHeight="220"
-                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                 ScrollViewer.VerticalScrollBarVisibility="Auto"
-                 MouseDoubleClick="ActivityList_MouseDoubleClick">
-            <ListBox.ItemTemplate>
-                <DataTemplate>
-                    <Grid Height="36" Margin="8,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="{Binding Title}"
+                                   Margin="10,0,10,0"
                                    VerticalAlignment="Center"
-                                   TextTrimming="CharacterEllipsis"
-                                   FontWeight="SemiBold"
-                                   Foreground="{StaticResource TextBrush}"
-                                   Margin="0,0,10,0" />
-                        <TextBlock Grid.Column="1"
-                                   Text="{Binding Meta}"
-                                   VerticalAlignment="Center"
-                                   Foreground="{StaticResource MutedBrush}"
-                                   FontSize="12" />
+                                   TextTrimming="CharacterEllipsis" />
+                        <Button x:Name="UpdateButton"
+                                Grid.Column="2"
+                                Style="{StaticResource QuietButton}"
+                                VerticalAlignment="Center"
+                                Content="Buscar"
+                                ToolTip="Comprueba si hay una versión nueva y la descarga. Te avisa antes de reiniciar." />
                     </Grid>
-                </DataTemplate>
-            </ListBox.ItemTemplate>
-        </ListBox>
-
-        <Button x:Name="OpenPanelButton"
-                Grid.Row="7"
-                Content="Abrir panel →"
-                Style="{StaticResource LinkButton}"
-                HorizontalAlignment="Right"
-                Margin="0,10,4,4" />
-    </Grid>
-    </ScrollViewer>
+                </Border>
+            </Grid>
+        </Grid>
+    </Border>
 </Window>

@@ -888,6 +888,35 @@ public sealed partial class MainWindow : Window
         });
     }
 
+    // Chrome-less window: the custom title bar drives dragging and the min/close buttons.
+    private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left)
+        {
+            return;
+        }
+
+        try
+        {
+            DragMove();
+        }
+        catch
+        {
+            // DragMove throws if the button was already released; ignore.
+        }
+    }
+
+    private void MinimizeButton_Click(object sender, RoutedEventArgs e)
+    {
+        WindowState = WindowState.Minimized;
+    }
+
+    // Close routes through OnClosing, which cancels the real close and hides to the tray.
+    private void CloseButton_Click(object sender, RoutedEventArgs e)
+    {
+        Close();
+    }
+
     private void SetStatus(string message)
     {
         StatusText.Text = string.IsNullOrWhiteSpace(message) ? "Listo." : message;

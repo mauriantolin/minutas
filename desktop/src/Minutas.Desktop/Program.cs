@@ -37,6 +37,8 @@ internal static class Program
             ShutdownMode = System.Windows.ShutdownMode.OnExplicitShutdown
         };
 
+        ThemeManager.Apply(app);
+
         var window = new MainWindow(settings, auth, api, recorder, startup, preferences, presence);
         app.MainWindow = window;
         app.Startup += async (_, _) => await window.InitializeAsync();
