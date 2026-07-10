@@ -566,6 +566,7 @@
                                         HorizontalAlignment="Right"
                                         Content="Reiniciar ahora"
                                         ToolTip="Cierra Teams y lo vuelve a abrir para que tome el modo alta fidelidad de inmediato. No se puede hacer durante una reunión." />
+                            </StackPanel>
                         </Grid>
                     </Grid>
                 </Border>
