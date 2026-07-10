@@ -145,6 +145,22 @@
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Padding" Value="0" />
             <Setter Property="HorizontalContentAlignment" Value="Right" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <TextBlock x:Name="Txt"
+                                   Text="{TemplateBinding Content}"
+                                   Foreground="{TemplateBinding Foreground}"
+                                   HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" />
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Txt" Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
+                                <Setter TargetName="Txt" Property="TextDecorations" Value="Underline" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="InputBox" TargetType="TextBox">
@@ -218,6 +234,7 @@
         <Style TargetType="ListBoxItem">
             <Setter Property="MinHeight" Value="36" />
             <Setter Property="Padding" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -313,6 +330,8 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <Grid x:Name="LoginPanel" Grid.Row="0" Margin="0,0,0,14">
@@ -382,11 +401,9 @@
                         BorderThickness="1"
                         CornerRadius="12"
                         Padding="14"
-                        Margin="0,0,0,12">
+                        Margin="0,0,0,14">
                     <Grid>
                         <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
@@ -402,40 +419,18 @@
                                        Foreground="{DynamicResource MutedBrush}"
                                        Margin="7,0,0,0"
                                        VerticalAlignment="Center"
-                                       Cursor="Help"
+                                       Cursor="Hand"
                                        ToolTip="Lee subtítulos en vivo de Teams Desktop, incluso minimizado. No graba audio." />
                         </StackPanel>
 
-                        <Grid x:Name="AutoCaptureRow" Grid.Row="1" Margin="0,14,0,14">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel>
-                                <TextBlock Text="Automática"
-                                           FontWeight="SemiBold"
-                                           FontSize="13" />
-                                <TextBlock x:Name="AutoCaptureHintText"
-                                           Text="Detecta una llamada de Teams Desktop y empieza a transcribir."
-                                           Foreground="{DynamicResource MutedBrush}"
-                                           FontSize="12"
-                                           Margin="0,3,12,0"
-                                           TextWrapping="Wrap" />
-                            </StackPanel>
-                            <CheckBox x:Name="AutoCaptureMeetingsCheckBox"
-                                      Grid.Column="1"
-                                      Style="{StaticResource SwitchCheckBox}"
-                                      VerticalAlignment="Center"
-                                      ToolTip="Cuando está activo, Minutix mira si aparece una reunión de Teams Desktop y arranca la captura de subtítulos automáticamente." />
-                        </Grid>
-
                         <Button x:Name="StartButton"
-                                Grid.Row="2"
+                                Grid.Row="1"
+                                Margin="0,12,0,0"
                                 Style="{StaticResource PrimaryButton}"
                                 Content="&#x25B6; Transcribir"
                                 ToolTip="Inicia la captura de subtítulos visibles en Teams Desktop." />
 
-                        <Grid x:Name="CapturingPanel" Grid.Row="2" Visibility="Collapsed">
+                        <Grid x:Name="CapturingPanel" Grid.Row="1" Margin="0,12,0,0" Visibility="Collapsed">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="*" />
@@ -533,93 +528,25 @@
                         </Grid>
 
                         <TextBlock x:Name="ModeText"
-                                   Grid.Row="3"
-                                   Text="Modo: Subtítulos de Teams Desktop"
-                                   Foreground="{DynamicResource MutedBrush}"
-                                   FontSize="12"
-                                   Margin="0,14,0,0" />
-
-                        <Grid x:Name="HighFidelityRow" Grid.Row="4" Margin="0,14,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel VerticalAlignment="Center">
-                                <TextBlock Text="Alta fidelidad"
-                                           FontWeight="SemiBold"
-                                           FontSize="13" />
-                                <TextBlock x:Name="HighFidelityHintText"
-                                           Text="Cada subtítulo con su autor exacto, desde el inicio de Windows."
-                                           Foreground="{DynamicResource MutedBrush}"
-                                           FontSize="12"
-                                           Margin="0,3,12,0"
-                                           TextWrapping="Wrap" />
-                            </StackPanel>
-                            <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
-                                <CheckBox x:Name="HighFidelityAutoCheckBox"
-                                          Style="{StaticResource SwitchCheckBox}"
-                                          HorizontalAlignment="Right"
-                                          ToolTip="Persiste el modo alta fidelidad (variable de entorno de usuario) para que Teams siempre exponga los subtítulos con su autor exacto. Reversible. También afecta a otras apps WebView2 (Outlook nuevo, Widgets)." />
-                                <Button x:Name="HighFidelityButton"
-                                        Style="{StaticResource LinkButton}"
-                                        Margin="0,8,0,0"
-                                        HorizontalAlignment="Right"
-                                        Content="Reiniciar ahora"
-                                        ToolTip="Cierra Teams y lo vuelve a abrir para que tome el modo alta fidelidad de inmediato. No se puede hacer durante una reunión." />
-                            </StackPanel>
-                        </Grid>
+                                   Grid.Row="2"
+                                   Text="Subtítulos de Teams Desktop"
+                                   Foreground="{DynamicResource SubtleBrush}"
+                                   FontSize="11"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,10,0,0" />
                     </Grid>
                 </Border>
-
-                <Border x:Name="StartupCard"
-                        Grid.Row="2"
-                        Background="{DynamicResource SurfaceBrush}"
-                        BorderBrush="{DynamicResource BorderBrushSoft}"
-                        BorderThickness="1"
-                        CornerRadius="12"
-                        Padding="12"
-                        Margin="0,0,0,12">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="Iniciar con Windows"
-                                       FontWeight="SemiBold"
-                                       FontSize="13" />
-                            <TextBlock x:Name="StartupHintText"
-                                       Text="Se abre minimizado en la bandeja."
-                                       Foreground="{DynamicResource MutedBrush}"
-                                       FontSize="12"
-                                       Margin="0,3,12,0"
-                                       TextWrapping="Wrap" />
-                        </StackPanel>
-                        <CheckBox x:Name="StartupWithWindowsCheckBox"
-                                  Grid.Column="1"
-                                  Style="{StaticResource SwitchCheckBox}"
-                                  VerticalAlignment="Center"
-                                  ToolTip="Activa o desactiva el inicio automático de Minutix para tu usuario de Windows." />
-                    </Grid>
-                </Border>
-
-                <TextBlock x:Name="StatusText"
-                           Grid.Row="3"
-                           Text="Listo."
-                           Foreground="{DynamicResource MutedBrush}"
-                           FontSize="12"
-                           Margin="0,0,0,8" />
 
                 <TextBlock x:Name="ActivityTitle"
-                           Grid.Row="4"
+                           Grid.Row="2"
                            Text="Últimas reuniones"
                            FontWeight="Bold"
                            Foreground="{DynamicResource TextBrush}"
                            Margin="0,0,0,8" />
 
                 <ListBox x:Name="ActivityList"
-                         Grid.Row="5"
-                         MaxHeight="220"
+                         Grid.Row="3"
+                         MaxHeight="200"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                          ScrollViewer.VerticalScrollBarVisibility="Auto"
                          MouseDoubleClick="ActivityList_MouseDoubleClick">
@@ -647,20 +574,113 @@
                 </ListBox>
 
                 <Button x:Name="OpenPanelButton"
-                        Grid.Row="6"
+                        Grid.Row="4"
                         Content="Abrir panel →"
                         Style="{StaticResource LinkButton}"
                         HorizontalAlignment="Right"
-                        Margin="0,10,4,4" />
+                        Margin="0,10,4,2" />
+
+                <!-- Ajustes: cada detalle vive en el ⓘ (hover), no en pantalla. -->
+                <Grid x:Name="AutoCaptureRow" Grid.Row="5" Margin="0,14,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Automática" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1"
+                               Text="&#x24D8;"
+                               FontSize="13"
+                               Foreground="{DynamicResource MutedBrush}"
+                               Margin="6,0,0,0"
+                               VerticalAlignment="Center"
+                               Cursor="Hand"
+                               ToolTip="{Binding Text, ElementName=AutoCaptureHintText}" />
+                    <TextBlock x:Name="AutoCaptureHintText"
+                               Visibility="Collapsed"
+                               Text="Detecta una llamada de Teams Desktop y empieza a transcribir." />
+                    <CheckBox x:Name="AutoCaptureMeetingsCheckBox"
+                              Grid.Column="3"
+                              Style="{StaticResource SwitchCheckBox}"
+                              VerticalAlignment="Center"
+                              ToolTip="Cuando está activo, Minutix arranca la captura al detectar una reunión de Teams Desktop." />
+                </Grid>
+
+                <Grid x:Name="HighFidelityRow" Grid.Row="6" Margin="0,4,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Alta fidelidad" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1"
+                               Text="&#x24D8;"
+                               FontSize="13"
+                               Foreground="{DynamicResource MutedBrush}"
+                               Margin="6,0,0,0"
+                               VerticalAlignment="Center"
+                               Cursor="Hand"
+                               ToolTip="{Binding Text, ElementName=HighFidelityHintText}" />
+                    <TextBlock x:Name="HighFidelityHintText"
+                               Visibility="Collapsed"
+                               Text="Teams expone cada subtítulo con su autor exacto, desde el inicio de Windows. Reversible. También afecta a otras apps WebView2 (Outlook nuevo, Widgets)." />
+                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button x:Name="HighFidelityButton"
+                                Style="{StaticResource LinkButton}"
+                                Content="Reiniciar"
+                                Margin="0,0,12,0"
+                                VerticalAlignment="Center"
+                                ToolTip="Cierra Teams y lo vuelve a abrir para que tome el modo alta fidelidad de inmediato. No se puede hacer durante una reunión." />
+                        <CheckBox x:Name="HighFidelityAutoCheckBox"
+                                  Style="{StaticResource SwitchCheckBox}"
+                                  VerticalAlignment="Center"
+                                  ToolTip="Persiste el modo alta fidelidad (variable de entorno de usuario) para que Teams siempre exponga los subtítulos con su autor exacto. Reversible." />
+                    </StackPanel>
+                </Grid>
+
+                <Grid x:Name="StartupCard" Grid.Row="7" Margin="0,4,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Iniciar con Windows" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1"
+                               Text="&#x24D8;"
+                               FontSize="13"
+                               Foreground="{DynamicResource MutedBrush}"
+                               Margin="6,0,0,0"
+                               VerticalAlignment="Center"
+                               Cursor="Hand"
+                               ToolTip="{Binding Text, ElementName=StartupHintText}" />
+                    <TextBlock x:Name="StartupHintText"
+                               Visibility="Collapsed"
+                               Text="Se abre minimizado en la bandeja." />
+                    <CheckBox x:Name="StartupWithWindowsCheckBox"
+                              Grid.Column="3"
+                              Style="{StaticResource SwitchCheckBox}"
+                              VerticalAlignment="Center"
+                              ToolTip="Activa o desactiva el inicio automático de Minutix para tu usuario de Windows." />
+                </Grid>
+
+                <TextBlock x:Name="StatusText"
+                           Grid.Row="8"
+                           Text="Listo."
+                           Foreground="{DynamicResource SubtleBrush}"
+                           FontSize="11"
+                           Margin="0,12,0,0" />
 
                 <Border x:Name="UpdateCard"
-                        Grid.Row="7"
+                        Grid.Row="9"
                         Background="{DynamicResource SurfaceBrush}"
                         BorderBrush="{DynamicResource BorderBrushSoft}"
                         BorderThickness="1"
                         CornerRadius="12"
                         Padding="12"
-                        Margin="0,4,0,0">
+                        Margin="0,12,0,0">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />

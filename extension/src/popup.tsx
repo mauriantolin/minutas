@@ -302,10 +302,25 @@ function App() {
             <CardContent className="flex flex-col gap-3">
               {!capturing ? (
                 <>
-                  <label className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5">
                     <span className="text-sm font-medium">Automática</span>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          className="text-muted-foreground hover:text-foreground"
+                          aria-label="Qué hace"
+                        >
+                          <Info className="size-3.5" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Arranca la captura al detectar una reunión de Teams.
+                      </TooltipContent>
+                    </Tooltip>
+                    <span className="flex-1" />
                     <Switch checked={autoCapture} onCheckedChange={onToggleAuto} />
-                  </label>
+                  </div>
                   <Button className="w-full" onClick={onStart}>
                     <Play className="fill-current" /> Transcribir
                   </Button>

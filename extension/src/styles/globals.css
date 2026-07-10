@@ -100,4 +100,12 @@
   body {
     @apply bg-background text-foreground text-sm;
   }
+  /* shadcn drops cursor-pointer on buttons; restore it on everything clickable. */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  a[href],
+  label[for],
+  summary {
+    cursor: pointer;
+  }
 }
