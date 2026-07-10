@@ -23,6 +23,7 @@ public sealed partial class MainWindow : Window
     private readonly MeetingPresenceWatcher _presence;
     private readonly ObservableCollection<ActivityRow> _activityRows = new();
     private readonly ObservableCollection<TranscriptLine> _transcript = new();
+    private readonly DesktopUpdateService _updates = new();
     private readonly DispatcherTimer _elapsedTimer = new();
     private readonly DispatcherTimer _autoCaptureTimer = new();
     private readonly Forms.NotifyIcon _tray;
@@ -159,6 +160,8 @@ public sealed partial class MainWindow : Window
         OpenLiveButton.Click += (_, _) => OpenLive();
         OpenPanelButton.Click += (_, _) => OpenUrl(_settings.DashboardUrl);
         HighFidelityButton.Click += async (_, _) => await RelaunchTeamsHighFidelityAsync();
+        UpdateButton.Click += async (_, _) => await CheckForUpdatesAsync();
+        VersionText.Text = $"Versión {_updates.CurrentVersion}";
         AutoCaptureMeetingsCheckBox.Checked += async (_, _) => await SetAutoCaptureMeetingsAsync(true);
         AutoCaptureMeetingsCheckBox.Unchecked += async (_, _) => await SetAutoCaptureMeetingsAsync(false);
         StartupWithWindowsCheckBox.Checked += (_, _) => SetStartupWithWindows(true);
@@ -463,6 +466,49 @@ public sealed partial class MainWindow : Window
         SetStatus(error ?? "Teams reiniciado en modo alta fidelidad. Entrá a la reunión y activá subtítulos.");
     }
 
+    private async Task CheckForUpdatesAsync()
+    {
+        UpdateButton.IsEnabled = false;
+        VersionText.Text = "Buscando actualizaciones...";
+        var result = await _updates.CheckAndDownloadAsync().ConfigureAwait(true);
+
+        switch (result.Outcome)
+        {
+            case UpdateOutcome.Downloaded:
+                VersionText.Text = $"Actualización {result.Version} lista.";
+                var restart = System.Windows.MessageBox.Show(
+                    $"Se descargó la versión {result.Version}.\n\n¿Reiniciar Minutix ahora para aplicarla?",
+                    "Actualización disponible",
+                    MessageBoxButton.OKCancel,
+                    MessageBoxImage.Information);
+                if (restart == MessageBoxResult.OK)
+                {
+                    _updates.ApplyAndRestart();
+                }
+                else
+                {
+                    VersionText.Text = $"Versión {_updates.CurrentVersion} · actualización pendiente al reiniciar";
+                }
+
+                break;
+
+            case UpdateOutcome.UpToDate:
+                VersionText.Text = $"Versión {_updates.CurrentVersion} · estás al día";
+                break;
+
+            case UpdateOutcome.NotInstalled:
+                VersionText.Text = $"Versión {_updates.CurrentVersion} (build de desarrollo)";
+                break;
+
+            case UpdateOutcome.Failed:
+                VersionText.Text = $"Versión {_updates.CurrentVersion} · no se pudo actualizar";
+                SetStatus($"No se pudo buscar actualizaciones: {result.Message}");
+                break;
+        }
+
+        UpdateButton.IsEnabled = true;
+    }
+
     private void OnMeetingJoined(object? sender, EventArgs e)
     {
         _ = HandleMeetingJoinedAsync();
@@ -722,6 +768,7 @@ public sealed partial class MainWindow : Window
         ModeText.Visibility = idle;
         HighFidelityRow.Visibility = idle;
         StartupCard.Visibility = idle;
+        UpdateCard.Visibility = idle;
         ActivityTitle.Visibility = idle;
         ActivityList.Visibility = idle;
         OpenLiveButton.IsEnabled = !string.IsNullOrWhiteSpace(_recorder.LiveUrl());
