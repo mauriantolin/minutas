@@ -193,6 +193,7 @@
         </Style>
     </Window.Resources>
 
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -201,7 +202,8 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -536,13 +538,13 @@
         </Border>
 
         <Border x:Name="UpdateCard"
-                Grid.Row="7"
+                Grid.Row="8"
                 Background="{StaticResource SurfaceBrush}"
                 BorderBrush="{StaticResource BorderBrushSoft}"
                 BorderThickness="1"
                 CornerRadius="10"
                 Padding="12"
-                Margin="0,4,0,0">
+                Margin="0,10,0,0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -584,6 +586,9 @@
 
         <ListBox x:Name="ActivityList"
                  Grid.Row="6"
+                 MaxHeight="220"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto"
                  MouseDoubleClick="ActivityList_MouseDoubleClick">
             <ListBox.ItemTemplate>
                 <DataTemplate>
@@ -613,6 +618,7 @@
                 Content="Abrir panel →"
                 Style="{StaticResource LinkButton}"
                 HorizontalAlignment="Right"
-                Margin="0,18,4,4" />
+                Margin="0,10,4,4" />
     </Grid>
+    </ScrollViewer>
 </Window>
