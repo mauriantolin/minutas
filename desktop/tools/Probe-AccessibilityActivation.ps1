@@ -19,16 +19,23 @@
     ia2         + QueryService(IID_IAccessible2)                        -> the NVDA/JAWS handshake
     simpledom   + QueryService(ISimpleDOMNode)                          -> historic "kHTML" signal
     uia-root    WM_GETOBJECT(lParam = UiaRootObjectId)                  -> native UIA provider
+    screenreader SPI_SETSCREENREADER on                                 -> legacy AT signal, restored after
 
   COM references obtained are held alive for the process lifetime: Chromium auto-disables
   accessibility once no AT client is listening, so a real implementation must keep them too.
+
+  POSITIVE CONTROL: an open captions pane is NOT the same as a pane with lines. With no captions
+  on screen every trigger reports zero nodes and the run proves nothing. So the probe snapshots
+  the patternText chunks, asks you to SPEAK, and refuses to continue until NEW chunks appear.
+  Those new chunks are the caption lines, and they are what makes a zero a real negative.
 
 .PREREQUISITES  (this is what makes the result representative of a fresh client install)
   1. Clear the env var and RESTART Teams, otherwise you are measuring the forced path:
        [Environment]::SetEnvironmentVariable('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',$null,'User')
      then fully quit Teams (tray icon -> Quit) and reopen it.
-  2. Join a meeting, turn live captions ON, and let a few caption lines appear.
-  3. Run this script. It prints a table; send me the JSON it writes.
+  2. Join a meeting and turn live captions ON.
+  3. Run this script. When it says SPEAK NOW, say a couple of full sentences out loud.
+     It prints a table; send me the JSON it writes.
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File .\Probe-AccessibilityActivation.ps1
@@ -136,6 +143,15 @@ public static class A11yActivation {
     var r = SendMessage(hwnd, WM_GETOBJECT, IntPtr.Zero, new IntPtr(UiaRootObjectId));
     return r == IntPtr.Zero ? "wm_getobject-returned-0" : "ok";
   }
+
+  // Legacy system-wide "a screen reader is running" flag. Chromium has historically consulted it.
+  // Reversible and not persisted (SPIF_SENDCHANGE only, no SPIF_UPDATEINIFILE).
+  public const uint SPI_SETSCREENREADER = 0x0047;
+  [DllImport("user32.dll", SetLastError = true)]
+  public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, IntPtr pvParam, uint fWinIni);
+  public static string SetScreenReader(bool on) {
+    return SystemParametersInfo(SPI_SETSCREENREADER, on ? 1u : 0u, IntPtr.Zero, 2) ? "ok" : "spi-failed";
+  }
 }
 "@
 
@@ -236,6 +252,45 @@ Write-Host ("precondition: captionsPane={0} patternTextLen={1}" -f $pre.paneOpen
 if (-not $pre.paneOpen) {
   throw "Captions pane NOT found (no Button with AutomationId ~ 'captions'). You are not in a meeting with live captions ON. This run would be meaningless. Enable captions, let a few lines appear, then rerun."
 }
+
+# An OPEN pane is not the same as a pane WITH LINES. A previous run reported a "valid negative"
+# from a meeting where nobody had spoken: every trigger reports zero caption nodes when there are
+# no captions at all. So prove captions are flowing, without eyeballing and without depending on
+# names or locale: snapshot the patternText chunks, have the operator speak, and require NEW
+# chunks to appear. Those new chunks ARE the caption lines.
+function Get-Chunks {
+  $sep = [char]0xfffc
+  $set = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($r in Get-MeetingRoots) {
+    $tp = Invoke-Safe { $r.Area.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern) }
+    if (-not $tp) { continue }
+    $pt = Invoke-Safe { $tp.DocumentRange.GetText(20000) } ""
+    foreach ($c in $pt.Split($sep)) {
+      $t = $c.Trim()
+      if ($t.Length -gt 0) { [void]$set.Add($t) }
+    }
+  }
+  return $set
+}
+
+$before = Get-Chunks
+Write-Host ""
+Write-Host "SPEAK NOW - say a couple of full sentences out loud." -ForegroundColor Cyan
+Write-Host "Waiting up to 60s for new caption lines to appear..." -ForegroundColor Cyan
+$spoken = @()
+for ($i = 0; $i -lt 20; $i++) {
+  Start-Sleep -Seconds 3
+  $after = Get-Chunks
+  $new = @($after | Where-Object { -not $before.Contains($_) -and ($_ -split '\s+').Count -ge 3 })
+  if ($new.Count -ge 1) { $spoken = $new; break }
+  Write-Host "  ...still no new caption lines" -ForegroundColor DarkGray
+}
+if ($spoken.Count -eq 0) {
+  throw "No caption lines appeared in patternText after 60s of waiting. Either nobody spoke, or Teams is not transcribing. Without caption lines on screen EVERY trigger reports zero nodes and the run proves nothing. Speak, confirm you see captions in the Teams UI, then rerun."
+}
+Write-Host ("Captions confirmed flowing. {0} new chunk(s), e.g.:" -f $spoken.Count) -ForegroundColor Green
+$spoken | Select-Object -First 3 | ForEach-Object { Write-Host ("  + {0}" -f $_) -ForegroundColor Green }
+Write-Host ""
 # No magic length threshold: a real forced run with 3 caption lines measured only 814 chars, so
 # any cutoff would reject valid runs. Show the tail instead and let the operator confirm that
 # spoken lines are present before trusting a zero.
@@ -255,9 +310,15 @@ Write-Host ("Teams meeting roots: {0} | renderer HWNDs: {1}" -f $roots.Count, $t
 Write-Host ""
 
 $results = @()
-foreach ($trigger in @("none", "msaa", "ia2", "simpledom", "uia-root")) {
+$screenReaderSet = $false
+foreach ($trigger in @("none", "msaa", "ia2", "simpledom", "uia-root", "screenreader")) {
   $status = @()
-  if ($trigger -ne "none") {
+  if ($trigger -eq "screenreader") {
+    $status += [A11yActivation]::SetScreenReader($true)
+    $screenReaderSet = $true
+    Start-Sleep -Seconds $SettleSeconds
+  }
+  elseif ($trigger -ne "none") {
     foreach ($h in $targets) {
       $s = if ($trigger -eq "uia-root") { [A11yActivation]::UiaRoot($h) } else { [A11yActivation]::Handshake($h, $trigger) }
       $status += $s
@@ -292,10 +353,16 @@ if ($first) {
   $results += [pscustomobject]@{ trigger = "hold-$AutoDisableCheckSeconds`s"; handshake = "kept-refs"; captionNodes = $after.count; sampleSpeaker = $after.sample.speaker; sampleText = $after.sample.text }
 }
 
+if ($screenReaderSet) {
+  $r = [A11yActivation]::SetScreenReader($false)
+  Write-Host ("Restored SPI_SETSCREENREADER to off ({0})" -f $r) -ForegroundColor DarkGray
+}
+
 @{
-  envVarSet = [bool]([Environment]::GetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "User"))
+  envVarSet     = [bool]([Environment]::GetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "User"))
   rendererHwnds = $targets.Count
-  results = $results
+  spokenChunks  = @($spoken)   # the proof that captions were on screen while measuring
+  results       = $results
 } | ConvertTo-Json -Depth 5 | Set-Content -Path $OutPath -Encoding UTF8
 
 Write-Host ""
@@ -308,7 +375,9 @@ elseif (($results | Where-Object { $_.trigger -eq "none" }).captionNodes -gt 0) 
   Write-Host "=> Captions were ALREADY structural before any trigger (env var still set / Teams not restarted)." -ForegroundColor Yellow
 }
 else {
-  # Only now is a zero meaningful: the pane was open and Teams was rendering caption lines.
-  Write-Host "=> VALID NEGATIVE: captions pane open, Teams rendering lines, yet no trigger exposed" -ForegroundColor Yellow
-  Write-Host "   discrete nodes. The env var (or option C: our own WebView2) is required." -ForegroundColor Yellow
+  # A zero is only meaningful because we PROVED caption lines were on screen: $spoken is the set
+  # of chunks that appeared in patternText while the operator spoke.
+  Write-Host ("=> VALID NEGATIVE: {0} caption line(s) were on screen (verified, see spokenChunks)," -f $spoken.Count) -ForegroundColor Yellow
+  Write-Host "   yet no trigger exposed discrete nodes. Captions live only in the flat patternText." -ForegroundColor Yellow
+  Write-Host "   The env var (or option C: our own WebView2) is required." -ForegroundColor Yellow
 }
