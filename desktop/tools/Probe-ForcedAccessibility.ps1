@@ -32,6 +32,11 @@
 param(
   [ValidateSet("Teams", "Edge")][string]$Target = "Teams",
   [switch]$Relaunch,
+  # Inherit the flag through the child process environment ONLY - never write the persisted user
+  # variable. This is the shape a client installer could actually ship: the flag reaches the Teams
+  # instance we launch and no other WebView2 app on the machine. The plain -Relaunch sets BOTH, so
+  # it cannot tell us which one did the work.
+  [switch]$NoPersist,
   [string]$Label = "probe",
   [int]$MaxDepth = 25,
   [int]$MaxElements = 20000,
@@ -54,10 +59,21 @@ if ($Relaunch) {
 
     # Child process inherits this session's environment -> the flag reaches the WebView2 renderer.
     $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $FLAG
-    # Also persist for the user, so a Teams started from the shell/tray picks it up too.
-    [Environment]::SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", $FLAG, "User")
 
-    Write-Host "Launching Teams with $FLAG" -ForegroundColor Green
+    if ($NoPersist) {
+      # Prove the per-process inheritance alone is enough: a leftover user variable would make a
+      # success meaningless, so refuse to run with one set.
+      if ([Environment]::GetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "User")) {
+        throw "The persisted user variable is still set, so a positive result would prove nothing. Clear it first: [Environment]::SetEnvironmentVariable('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',`$null,'User')"
+      }
+      Write-Host "Launching Teams with $FLAG (process-scoped, nothing persisted)" -ForegroundColor Green
+    }
+    else {
+      # Also persist for the user, so a Teams started from the shell/tray picks it up too.
+      [Environment]::SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", $FLAG, "User")
+      Write-Host "Launching Teams with $FLAG (persisted user variable: affects EVERY WebView2 app)" -ForegroundColor Yellow
+    }
+
     Start-Process -FilePath $exe
   }
   else {
@@ -71,7 +87,14 @@ if ($Relaunch) {
   Write-Host "NOW: rejoin the meeting, turn live captions ON, wait for a few caption lines." -ForegroundColor Cyan
   Write-Host "THEN run:  .\Probe-ForcedAccessibility.ps1 -Label forced" -ForegroundColor Cyan
   Write-Host ""
-  Write-Host "To undo later:  [Environment]::SetEnvironmentVariable('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',`$null,'User')" -ForegroundColor DarkGray
+  if ($NoPersist) {
+    Write-Host "Nothing was persisted. Close this Teams and reopen it normally to go back." -ForegroundColor DarkGray
+    Write-Host "If -Label forced now reports STRUCTURAL, process-scoped inheritance is enough:" -ForegroundColor DarkGray
+    Write-Host "the app can launch Teams itself and no other WebView2 app is affected." -ForegroundColor DarkGray
+  }
+  else {
+    Write-Host "To undo later:  [Environment]::SetEnvironmentVariable('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',`$null,'User')" -ForegroundColor DarkGray
+  }
   return
 }
 
