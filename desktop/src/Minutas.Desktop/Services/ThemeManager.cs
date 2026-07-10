@@ -11,9 +11,9 @@ public static class ThemeManager
     private const string LightThemeUri = "pack://application:,,,/UI/Theme.Light.xaml";
     private const string PersonalizeKey = @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
 
-    private static Application? _app;
+    private static System.Windows.Application? _app;
 
-    public static void Apply(Application app)
+    public static void Apply(System.Windows.Application app)
     {
         _app = app;
         ApplyCurrent();
