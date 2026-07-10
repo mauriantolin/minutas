@@ -256,7 +256,11 @@ public sealed class TeamsCaptionWatcher
                 var captionsUiVisible = ContainsCaptionChrome(patternText);
                 var meetingEnded = IsMeetingEndedText(patternText);
 
-                if (!isMeetingSurface && !(isCaptionsWindow && hasCaptions) && !meetingEnded)
+                // Un root con subtitulos se conserva SIEMPRE, aunque IsMeetingSurface no puntue:
+                // Teams auto-oculta la barra de controles con el mouse quieto y entonces el
+                // patternText pierde "Salir"/"Compartir contenido" -> el score cae a 0 y se
+                // descartaban subtitulos que seguian presentes en el arbol.
+                if (!isMeetingSurface && !hasCaptions && !meetingEnded)
                 {
                     continue;
                 }
@@ -633,13 +637,64 @@ public sealed class TeamsCaptionWatcher
         return newItems;
     }
 
+    // El ASR de Teams REESCRIBE la linea en su lugar ("es no se" -> "es. No se"), no solo
+    // agrega texto al final. Un test contra un dump real: el refinamiento de una misma frase
+    // da similitud 0.93, mientras que enunciados DISTINTOS del mismo hablante no pasan de 0.31.
+    // De ahi el umbral 0.6. El prefijo se mantiene porque cubre el crecimiento inicial
+    // ("No se" -> "No se ni si tocan..."), donde la similitud es baja por diferencia de largo.
+    private const double RevisionSimilarityThreshold = 0.6;
+
     private static bool IsRevision(string previousText, string currentText)
     {
         var previous = ComparableText(previousText);
         var current = ComparableText(currentText);
-        return previous.Length > 0 &&
-            current.Length >= previous.Length &&
-            current.StartsWith(previous, StringComparison.OrdinalIgnoreCase);
+        if (previous.Length == 0)
+        {
+            return false;
+        }
+
+        if (current.Length >= previous.Length &&
+            current.StartsWith(previous, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return Similarity(previous, current) >= RevisionSimilarityThreshold;
+    }
+
+    // Similitud normalizada por distancia de edicion (1 - dist/maxLen).
+    private static double Similarity(string a, string b)
+    {
+        var x = a.ToLowerInvariant();
+        var y = b.ToLowerInvariant();
+        if (x.Length == 0 || y.Length == 0)
+        {
+            return 0;
+        }
+
+        var previousRow = new int[y.Length + 1];
+        var currentRow = new int[y.Length + 1];
+        for (var j = 0; j <= y.Length; j++)
+        {
+            previousRow[j] = j;
+        }
+
+        for (var i = 1; i <= x.Length; i++)
+        {
+            currentRow[0] = i;
+            for (var j = 1; j <= y.Length; j++)
+            {
+                var cost = x[i - 1] == y[j - 1] ? 0 : 1;
+                currentRow[j] = Math.Min(
+                    Math.Min(currentRow[j - 1] + 1, previousRow[j] + 1),
+                    previousRow[j - 1] + cost);
+            }
+
+            (previousRow, currentRow) = (currentRow, previousRow);
+        }
+
+        var distance = previousRow[y.Length];
+        return 1.0 - ((double)distance / Math.Max(x.Length, y.Length));
     }
 
     private static string ComparableText(string text)
