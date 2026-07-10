@@ -22,6 +22,7 @@ public sealed partial class MainWindow : Window
     private readonly DesktopPreferencesService _preferences;
     private readonly MeetingPresenceWatcher _presence;
     private readonly ObservableCollection<ActivityRow> _activityRows = new();
+    private readonly ObservableCollection<TranscriptLine> _transcript = new();
     private readonly DispatcherTimer _elapsedTimer = new();
     private readonly DispatcherTimer _autoCaptureTimer = new();
     private readonly Forms.NotifyIcon _tray;
@@ -57,6 +58,8 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
 
         ActivityList.ItemsSource = _activityRows;
+        TranscriptList.ItemsSource = _transcript;
+        _transcript.CollectionChanged += (_, _) => TranscriptScroll.ScrollToEnd();
         EmailBox.Text = "";
         SetStatus("Listo.");
         SetCaptureUi(false);
@@ -711,6 +714,16 @@ public sealed partial class MainWindow : Window
     {
         StartButton.Visibility = capturing ? Visibility.Collapsed : Visibility.Visible;
         CapturingPanel.Visibility = capturing ? Visibility.Visible : Visibility.Collapsed;
+
+        // Durante la captura la vista se enfoca en la transcripcion: se ocultan los ajustes y la
+        // lista de reuniones para no competir con lo que el usuario quiere leer en vivo.
+        var idle = capturing ? Visibility.Collapsed : Visibility.Visible;
+        AutoCaptureRow.Visibility = idle;
+        ModeText.Visibility = idle;
+        HighFidelityRow.Visibility = idle;
+        StartupCard.Visibility = idle;
+        ActivityTitle.Visibility = idle;
+        ActivityList.Visibility = idle;
         OpenLiveButton.IsEnabled = !string.IsNullOrWhiteSpace(_recorder.LiveUrl());
         StartButton.IsEnabled = !capturing && !string.IsNullOrWhiteSpace(_signedEmail);
 
@@ -729,22 +742,40 @@ public sealed partial class MainWindow : Window
             _elapsedTimer.Stop();
             _captureStartedAt = null;
             ElapsedText.Text = "00:00";
+            _transcript.Clear();
         }
     }
 
+    // Los subtitulos van a su propia lista (orden de chat, autoscroll), NO a "Ultimas reuniones":
+    // mezclarlos ahi los dejaba invertidos, cortados a 80 y encima de la lista de reuniones.
     private void AddCaptionRow(CaptionEvent caption)
     {
-        if (_activityRows.Count == 1 && _activityRows[0].Url is null && _activityRows[0].Title.StartsWith("Esperando", StringComparison.OrdinalIgnoreCase))
+        var speaker = string.IsNullOrWhiteSpace(caption.SpeakerName) ? "Teams" : caption.SpeakerName;
+        _transcript.Add(new TranscriptLine(speaker, caption.Text, FormatElapsed(caption.T), SpeakerBrush(speaker)));
+        while (_transcript.Count > 500)
         {
-            _activityRows.Clear();
+            _transcript.RemoveAt(0);
+        }
+    }
+
+    // Color estable por hablante (hash -> paleta), como los tiles de la extension. Agnostico:
+    // no interpreta el nombre, solo lo usa como semilla.
+    private static readonly string[] SpeakerPalette =
+    {
+        "#635BFF", "#10D897", "#F59E0B", "#EC4899", "#38BDF8", "#A78BFA", "#34D399", "#FB7185",
+    };
+
+    private static System.Windows.Media.Brush SpeakerBrush(string speaker)
+    {
+        var hash = 0;
+        foreach (var ch in speaker)
+        {
+            hash = unchecked((hash * 31) + ch);
         }
 
-        var speaker = string.IsNullOrWhiteSpace(caption.SpeakerName) ? "Teams" : caption.SpeakerName;
-        _activityRows.Insert(0, new ActivityRow($"{speaker}: {caption.Text}", FormatElapsed(caption.T), null));
-        while (_activityRows.Count > 80)
-        {
-            _activityRows.RemoveAt(_activityRows.Count - 1);
-        }
+        var color = SpeakerPalette[Math.Abs(hash) % SpeakerPalette.Length];
+        return new System.Windows.Media.SolidColorBrush(
+            (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(color));
     }
 
     private void RefreshElapsed()
@@ -892,4 +923,6 @@ public sealed partial class MainWindow : Window
     }
 
     public sealed record ActivityRow(string Title, string Meta, string? Url);
+
+    public sealed record TranscriptLine(string Speaker, string Text, string Meta, System.Windows.Media.Brush Color);
 }

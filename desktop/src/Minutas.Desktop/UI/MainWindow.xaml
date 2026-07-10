@@ -343,7 +343,7 @@
                                LineHeight="18" />
                 </Grid>
 
-                <Grid Grid.Row="2" Margin="0,0,0,14">
+                <Grid x:Name="AutoCaptureRow" Grid.Row="2" Margin="0,0,0,14">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
@@ -376,26 +376,80 @@
                 <Grid x:Name="CapturingPanel" Grid.Row="3" Visibility="Collapsed">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
+
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <Ellipse Width="7" Height="7" Fill="{StaticResource DangerBrush}" Margin="0,0,8,0" />
-                            <TextBlock Text="Transcribiendo" FontWeight="SemiBold" />
+                            <Ellipse Width="8" Height="8" Fill="{StaticResource DangerBrush}" Margin="0,0,8,0">
+                                <Ellipse.Triggers>
+                                    <EventTrigger RoutedEvent="Ellipse.Loaded">
+                                        <BeginStoryboard>
+                                            <Storyboard RepeatBehavior="Forever" AutoReverse="True">
+                                                <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                 From="1" To="0.3" Duration="0:0:0.9" />
+                                            </Storyboard>
+                                        </BeginStoryboard>
+                                    </EventTrigger>
+                                </Ellipse.Triggers>
+                            </Ellipse>
+                            <TextBlock Text="En vivo" FontWeight="SemiBold" />
                             <TextBlock Text=" · " Foreground="{StaticResource MutedBrush}" />
                             <TextBlock x:Name="ElapsedText" Text="00:00" Foreground="{StaticResource MutedBrush}" />
                         </StackPanel>
                         <Button x:Name="OpenLiveButton"
                                 Grid.Column="1"
                                 Style="{StaticResource LinkButton}"
-                                Content="Ver en vivo"
+                                Content="Abrir en el navegador"
                                 ToolTip="Abre el panel web de esta reunión." />
                     </Grid>
-                    <Grid Grid.Row="1" Margin="0,14,0,0">
+
+                    <Border Grid.Row="1"
+                            Margin="0,12,0,0"
+                            Background="{StaticResource BgBrush}"
+                            BorderBrush="{StaticResource BorderBrushSoft}"
+                            BorderThickness="1"
+                            CornerRadius="10"
+                            MinHeight="220">
+                        <ScrollViewer x:Name="TranscriptScroll"
+                                      VerticalScrollBarVisibility="Auto"
+                                      Padding="12,10"
+                                      MaxHeight="360">
+                            <ItemsControl x:Name="TranscriptList">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="0,0,0,11">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="{Binding Speaker}"
+                                                           FontWeight="SemiBold"
+                                                           FontSize="12.5"
+                                                           Foreground="{Binding Color}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding Meta}"
+                                                           FontSize="11"
+                                                           Foreground="{StaticResource SubtleBrush}"
+                                                           Margin="8,0,0,0"
+                                                           VerticalAlignment="Center" />
+                                            </StackPanel>
+                                            <TextBlock Text="{Binding Text}"
+                                                       FontSize="13"
+                                                       LineHeight="19"
+                                                       Margin="0,1,0,0"
+                                                       TextWrapping="Wrap"
+                                                       Foreground="{StaticResource TextBrush}" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </Border>
+
+                    <Grid Grid.Row="2" Margin="0,12,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="10" />
@@ -421,7 +475,7 @@
                            FontSize="12"
                            Margin="0,14,0,0" />
 
-                <Grid Grid.Row="5" Margin="0,14,0,0">
+                <Grid x:Name="HighFidelityRow" Grid.Row="5" Margin="0,14,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
@@ -448,7 +502,8 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="3"
+        <Border x:Name="StartupCard"
+                Grid.Row="3"
                 Background="{StaticResource SurfaceBrush}"
                 BorderBrush="{StaticResource BorderBrushSoft}"
                 BorderThickness="1"
