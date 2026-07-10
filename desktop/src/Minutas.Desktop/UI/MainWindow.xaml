@@ -673,19 +673,13 @@
                                ToolTip="{Binding Text, ElementName=HighFidelityHintText}" />
                     <TextBlock x:Name="HighFidelityHintText"
                                Visibility="Collapsed"
-                               Text="Teams expone cada subtítulo con su autor exacto, desde el inicio de Windows. Reversible. También afecta a otras apps WebView2 (Outlook nuevo, Widgets)." />
-                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button x:Name="HighFidelityButton"
-                                Style="{StaticResource LinkButton}"
-                                Content="Reiniciar"
-                                Margin="0,0,12,0"
-                                VerticalAlignment="Center"
-                                ToolTip="Cierra Teams y lo vuelve a abrir para que tome el modo alta fidelidad de inmediato. No se puede hacer durante una reunión." />
-                        <CheckBox x:Name="HighFidelityAutoCheckBox"
-                                  Style="{StaticResource SwitchCheckBox}"
-                                  VerticalAlignment="Center"
-                                  ToolTip="Persiste el modo alta fidelidad (variable de entorno de usuario) para que Teams siempre exponga los subtítulos con su autor exacto. Reversible." />
-                    </StackPanel>
+                               Text="Siempre activo: Teams expone cada subtítulo con su autor exacto desde el inicio de Windows. Si Teams ya estaba abierto, usá Reiniciar para que lo tome. También afecta a otras apps WebView2 (Outlook nuevo, Widgets); se quita al desinstalar." />
+                    <Button x:Name="HighFidelityButton"
+                            Grid.Column="3"
+                            Style="{StaticResource LinkButton}"
+                            Content="Reiniciar Teams"
+                            VerticalAlignment="Center"
+                            ToolTip="Cierra Teams y lo vuelve a abrir para que tome el modo alta fidelidad de inmediato. No se puede hacer durante una reunión." />
                 </Grid>
 
                 <Grid x:Name="StartupCard" Grid.Row="7" Margin="0,4,0,4">
