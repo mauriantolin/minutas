@@ -165,6 +165,15 @@ public sealed class TeamsCaptionWatcher
             {
                 foreach (var caption in root.StructuralCaptions)
                 {
+                    // El lector estructural toma CUALQUIER grupo con >=2 nodos Text como autor+texto,
+                    // asi que los avisos de sistema y el roster de Teams (al unirse un participante:
+                    // "X se unio a la llamada", "El microfono esta desactivado", "Desconocido externo")
+                    // entraban como si fueran habla al principio. El parser plano si los filtra; aca no.
+                    if (IsChromeCaptionItem(caption.Speaker, caption.Text))
+                    {
+                        continue;
+                    }
+
                     yield return new CaptionObservation(
                         Math.Round(elapsedSeconds, 3),
                         caption.Speaker,
@@ -433,6 +442,13 @@ public sealed class TeamsCaptionWatcher
                 continue;
             }
 
+            // Avisos de sistema de Teams (union/salida/microfono/roster): se descartan antes de fijar
+            // speaker o de emitir. Mismo filtro que usa el path estructural.
+            if (IsSystemNoticeText(candidate))
+            {
+                continue;
+            }
+
             if (chromeControlNames is not null && chromeControlNames.Contains(candidate.Trim()))
             {
                 continue;
@@ -458,6 +474,114 @@ public sealed class TeamsCaptionWatcher
 
             yield return parsed;
         }
+    }
+
+    // Avisos de sistema y ecos de roster de Teams que se cuelan como si fueran habla, sobre todo al
+    // unirse un participante. Se matchea SOLO la parte FIJA del texto de Teams (EN+ES), agnostico al
+    // nombre/organizacion/tenant — igual criterio que los nombres del boton de salir del watcher.
+    // Frases COMPLETAS de Teams (no verbos sueltos): "se unió a la llamada" es una notificacion,
+    // pero "se unió a la empresa" o "Juan está presentando el informe" son habla real. Cada entrada
+    // debe ser inequivoca — nada de "is sharing"/"está presentando"/"se unió a la" a secas.
+    private static readonly string[] SystemNoticeFragments =
+    {
+        "se unió a la reunión", "se unio a la reunion", "se unió a la llamada", "se unio a la llamada",
+        "se ha unido a la reunión", "se ha unido a la reunion", "se ha unido a la llamada", "se ha unido a la llamada",
+        "joined the meeting", "joined the call",
+        "abandonó la reunión", "abandono la reunion", "abandonó la llamada", "abandono la llamada",
+        "salió de la reunión", "salio de la reunion", "salió de la llamada", "salio de la llamada",
+        "left the meeting", "left the call",
+        "micrófono está desactivado", "microfono esta desactivado", "micrófono está silenciado", "microfono esta silenciado",
+        "your microphone is muted", "your microphone is off",
+        "cámara está desactivada", "camara esta desactivada", "your camera is off",
+        "desconocido externo", "unknown external",
+        "grabación ha comenzado", "grabacion ha comenzado", "grabación iniciada", "grabacion iniciada",
+        "recording has started", "recording started", "started recording this meeting",
+        "compartió pantalla", "compartio pantalla", "está compartiendo su pantalla", "esta compartiendo su pantalla",
+        "shared their screen", "is sharing their screen", "started sharing their screen",
+    };
+
+    // Las notificaciones de sistema son lineas cortas y auto-contenidas; el habla real que contiene
+    // por coincidencia una frase parecida suele ser larga. Este techo de palabras evita descartar,
+    // p.ej., "cuando me uní a la reunión de ayer hablamos de..." (habla) sin dejar pasar la
+    // notificacion "X se unió a la reunión".
+    private const int SystemNoticeMaxWords = 12;
+
+    private static bool IsSystemNoticeText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return true;
+        }
+
+        var value = text.Trim();
+        if (value.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length > SystemNoticeMaxWords)
+        {
+            return false;
+        }
+
+        foreach (var fragment in SystemNoticeFragments)
+        {
+            if (value.Contains(fragment, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // Un enunciado del path estructural es basura de UI si el texto esta vacio, es un aviso de sistema,
+    // repite el nombre del autor (fila de roster) o es un nombre en MAYUSCULAS suelto (etiqueta del
+    // roster, no habla). Todo estructural, sin anclar en un nombre concreto.
+    private static bool IsChromeCaptionItem(string speaker, string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || IsSystemNoticeText(text))
+        {
+            return true;
+        }
+
+        var trimmed = text.Trim();
+        if (!string.IsNullOrWhiteSpace(speaker) &&
+            string.Equals(trimmed, speaker.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return IsRosterNameLabel(trimmed);
+    }
+
+    // 2-4 palabras TODAS en mayusculas, sin puntuacion de oracion y con al menos una palabra "larga"
+    // (>=4 letras) = etiqueta de roster ("APELLIDO NOMBRE SEGUNDO"), no habla: Teams no capitaliza
+    // asi los subtitulos. El minimo de largo evita descartar clusters de siglas cortas ("AWS GCP").
+    private static bool IsRosterNameLabel(string text)
+    {
+        if (text.IndexOfAny(new[] { '.', ',', '?', '!', ':', ';' }) >= 0)
+        {
+            return false;
+        }
+
+        var hasLetter = false;
+        foreach (var ch in text)
+        {
+            if (!char.IsLetter(ch))
+            {
+                continue;
+            }
+
+            hasLetter = true;
+            if (char.IsLower(ch))
+            {
+                return false;
+            }
+        }
+
+        if (!hasLetter)
+        {
+            return false;
+        }
+
+        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return words.Length is >= 2 and <= 4 && words.Any(word => word.Count(char.IsLetter) >= 4);
     }
 
     private static bool IsBlockedChrome(string line)
