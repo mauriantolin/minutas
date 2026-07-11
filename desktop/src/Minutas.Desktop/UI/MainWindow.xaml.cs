@@ -159,7 +159,6 @@ public sealed partial class MainWindow : Window
         CancelButton.Click += async (_, _) => await CancelCaptureAsync();
         OpenLiveButton.Click += (_, _) => OpenLive();
         OpenPanelButton.Click += (_, _) => OpenUrl(_settings.DashboardUrl);
-        HighFidelityButton.Click += async (_, _) => await RelaunchTeamsHighFidelityAsync();
         UpdateButton.Click += async (_, _) => await CheckForUpdatesAsync();
         VersionText.Text = $"Versión {_updates.CurrentVersion}";
         AutoCaptureMeetingsCheckBox.Checked += async (_, _) => await SetAutoCaptureMeetingsAsync(true);
@@ -427,40 +426,6 @@ public sealed partial class MainWindow : Window
         {
             Dispatch(() => SetStatus($"No se pudo descartar: {ex.Message}"));
         }
-    }
-
-    // Reiniciar Teams tira al usuario de la llamada, asi que se hace solo fuera de una reunion y
-    // con confirmacion. Solo la instancia que abrimos recibe el flag: nada queda configurado en
-    // Windows, y ninguna otra app WebView2 se ve afectada.
-    private async Task RelaunchTeamsHighFidelityAsync()
-    {
-        if (_recorder.IsCapturing || _recorder.IsTeamsMeetingActive())
-        {
-            SetStatus("Hay una reunión en curso. Salí de la reunión antes de reiniciar Teams.");
-            return;
-        }
-
-        var confirm = System.Windows.MessageBox.Show(
-            "Se va a cerrar Teams y abrirlo de nuevo en modo alta fidelidad.\n\n" +
-            "Solo afecta a esa instancia de Teams. No modifica ninguna otra aplicación " +
-            "ni deja nada configurado en Windows.\n\n" +
-            "Si volvés a abrir Teams desde la bandeja o al iniciar Windows, vuelve al modo normal.",
-            "Reiniciar Teams",
-            MessageBoxButton.OKCancel,
-            MessageBoxImage.Question);
-
-        if (confirm != MessageBoxResult.OK)
-        {
-            return;
-        }
-
-        HighFidelityButton.IsEnabled = false;
-        SetStatus("Reiniciando Teams...");
-
-        var error = await new TeamsHighFidelityService().RelaunchAsync().ConfigureAwait(true);
-
-        HighFidelityButton.IsEnabled = true;
-        SetStatus(error ?? "Teams reiniciado en modo alta fidelidad. Entrá a la reunión y activá subtítulos.");
     }
 
     private async Task CheckForUpdatesAsync()
@@ -786,7 +751,6 @@ public sealed partial class MainWindow : Window
         var idle = capturing ? Visibility.Collapsed : Visibility.Visible;
         AutoCaptureRow.Visibility = idle;
         ModeText.Visibility = idle;
-        HighFidelityRow.Visibility = idle;
         StartupCard.Visibility = idle;
         UpdateCard.Visibility = idle;
         ActivityTitle.Visibility = idle;

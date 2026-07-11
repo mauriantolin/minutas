@@ -675,35 +675,6 @@
                               ToolTip="Cuando está activo, Minutix arranca la captura al detectar una reunión de Teams Desktop." />
                 </Grid>
 
-                <Grid x:Name="HighFidelityRow" Grid.Row="6" Margin="0,4,0,4">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="Alta fidelidad" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" />
-                    <TextBlock Grid.Column="1"
-                               Text="&#x24D8;"
-                               FontSize="13"
-                               Foreground="{DynamicResource MutedBrush}"
-                               Margin="6,0,0,0"
-                               VerticalAlignment="Center"
-                               Cursor="Hand"
-                               ToolTipService.InitialShowDelay="250"
-                               ToolTipService.ShowDuration="20000"
-                               ToolTip="Teams expone cada subtítulo con su autor exacto, desde el inicio de Windows. Reversible. También afecta a otras apps WebView2 (Outlook nuevo, Widgets)." />
-                    <TextBlock x:Name="HighFidelityHintText"
-                               Visibility="Collapsed"
-                               Text="Siempre activo: Teams expone cada subtítulo con su autor exacto desde el inicio de Windows. Si Teams ya estaba abierto, usá Reiniciar para que lo tome. También afecta a otras apps WebView2 (Outlook nuevo, Widgets); se quita al desinstalar." />
-                    <Button x:Name="HighFidelityButton"
-                            Grid.Column="3"
-                            Style="{StaticResource LinkButton}"
-                            Content="Reiniciar Teams"
-                            VerticalAlignment="Center"
-                            ToolTip="Cierra Teams y lo vuelve a abrir para que tome el modo alta fidelidad de inmediato. No se puede hacer durante una reunión." />
-                </Grid>
-
                 <Grid x:Name="StartupCard" Grid.Row="7" Margin="0,4,0,4">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
