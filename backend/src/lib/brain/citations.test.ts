@@ -47,8 +47,32 @@ test("parseRefs dedupes repeated refs keeping first appearance", () => {
 });
 
 test("parseRefs ignores malformed markers", () => {
-  const refs = parseRefs("[N:] [M:m1:3] [X:m1:T1] [M:a b:T1]");
+  const refs = parseRefs("[N:] [M:] [X:m1:T1] [Z:x]");
   assert.deepEqual(refs, []);
+});
+
+test("parseRefs handles ISO-timestamp meetingIds that contain colons", () => {
+  const id = "2026-07-06T18:48:36.533Z-4864cbd4";
+  const refs = parseRefs(`Según [M:${id}:T109] y el resumen [M:${id}].`);
+  assert.deepEqual(refs, [
+    { ref: `M:${id}:T109`, kind: "meeting", id, turnId: "T109" },
+    { ref: `M:${id}`, kind: "meeting", id },
+  ]);
+});
+
+test("resolveCitations resolves and links an ISO-timestamp meeting ref", () => {
+  const id = "2026-07-08T13:03:43.6367796+00:00-067a3c2f";
+  const { answerMd, citations } = resolveCitations(`Se decidió X [M:${id}:T27].`, [
+    meetingHit(id, { turnStart: "T27" }),
+  ]);
+  assert.equal(answerMd, `Se decidió X [M:${id}:T27].`);
+  assert.equal(citations.length, 1);
+  assert.equal(citations[0]!.id, id);
+  assert.equal(citations[0]!.turnId, "T27");
+  assert.equal(
+    citations[0]!.url,
+    `/meeting?id=${encodeURIComponent(id)}&turn=T27`,
+  );
 });
 
 test("parseRefs accepts a turn-less meeting ref (summary/digest chunk)", () => {
