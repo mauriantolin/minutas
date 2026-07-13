@@ -1,7 +1,9 @@
 import type { BrainCitation } from "@teams-agent-core/shared";
 import type { QueryHit } from "./vectorstore.js";
 
-const REF_RE = /\[M:([A-Za-z0-9._-]+)(?::(T\d+))?\]|\[N:([A-Za-z0-9._-]+)\]/g;
+// meetingId is an ISO-timestamp+hash and contains ':' (e.g. 18:48:36), so the
+// id group must accept anything up to ']' except the optional ':Tn' turn tail.
+const REF_RE = /\[M:([^\]]+?)(?::(T\d+))?\]|\[N:([^\]]+?)\]/g;
 
 export interface ParsedRef {
   ref: string;

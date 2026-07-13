@@ -255,7 +255,7 @@ export function BrainView() {
                     <Button
                       variant="ghost"
                       size="icon-xs"
-                      className="mr-1 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+                      className="mr-1 shrink-0 text-muted-foreground opacity-70 transition-opacity hover:text-destructive hover:opacity-100 focus-visible:opacity-100"
                       aria-label="Eliminar conversación"
                       onClick={() => setDeleteTarget(th)}
                     >

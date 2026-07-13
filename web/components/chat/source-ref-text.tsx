@@ -10,7 +10,9 @@ export interface SourceRefTextProps {
   className?: string;
 }
 
-const REF_RE = /\[M:([A-Za-z0-9._-]+)(?::(T\d+))?\]|\[N:([A-Za-z0-9._-]+)\]/g;
+// meetingId is an ISO-timestamp+hash and contains ':' (e.g. 18:48:36), so the
+// id group must accept anything up to ']' except the optional ':Tn' turn tail.
+const REF_RE = /\[M:([^\]]+?)(?::(T\d+))?\]|\[N:([^\]]+?)\]/g;
 
 /**
  * Renders text with inline `[M:{meetingId}:Tn]` / `[N:{noteId}]` citation
