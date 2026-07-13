@@ -3,7 +3,17 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
-import { CalendarDays, Moon, Search, Settings, Sparkles, Sun } from "lucide-react";
+import {
+  Brain,
+  CalendarDays,
+  Mic,
+  Moon,
+  NotebookPen,
+  Search,
+  Settings,
+  Sparkles,
+  Sun,
+} from "lucide-react";
 import {
   CommandDialog,
   CommandEmpty,
@@ -74,6 +84,18 @@ export function CommandPalette({ meetings }: { meetings: Meeting[] | null }) {
           <CommandItem onSelect={() => go("/meetings")}>
             <Search />
             Nueva búsqueda
+          </CommandItem>
+          <CommandItem onSelect={() => go("/brain")}>
+            <Brain />
+            Preguntar a la memoria
+          </CommandItem>
+          <CommandItem onSelect={() => go("/notes")}>
+            <NotebookPen />
+            Notas
+          </CommandItem>
+          <CommandItem onSelect={() => go("/notes?record=1")}>
+            <Mic />
+            Nueva nota de voz
           </CommandItem>
           <CommandItem onSelect={() => go("/kits")}>
             <Sparkles />

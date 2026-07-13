@@ -5,11 +5,13 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
+  Brain,
   CalendarDays,
   ChevronsUpDown,
   LogOut,
   Monitor,
   Moon,
+  NotebookPen,
   Plus,
   Settings,
   ShieldCheck,
@@ -59,6 +61,8 @@ import type { Meeting } from "@/lib/api";
 
 const NAV = [
   { title: "Reuniones", href: "/meetings", icon: CalendarDays },
+  { title: "Memoria", href: "/brain", icon: Brain },
+  { title: "Notas", href: "/notes", icon: NotebookPen },
   { title: "Kits de IA", href: "/kits", icon: Sparkles },
   { title: "Configuración", href: "/settings", icon: Settings },
 ];

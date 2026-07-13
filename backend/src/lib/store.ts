@@ -188,6 +188,39 @@ export async function listMeetings(tenantId: string): Promise<Meeting[]> {
   return (Items ?? []) as Meeting[];
 }
 
+export async function listMeetingsPage(
+  tenantId: string,
+  limit: number,
+  cursor?: string,
+): Promise<{ meetings: Meeting[]; cursor?: string }> {
+  const { Items, LastEvaluatedKey } = await ddb.send(
+    new QueryCommand({
+      TableName: TABLE,
+      KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
+      ExpressionAttributeValues: { ":pk": pk(tenantId), ":sk": "MEETING#" },
+      ScanIndexForward: false,
+      Limit: limit,
+      ...(cursor
+        ? {
+            ExclusiveStartKey: JSON.parse(
+              Buffer.from(cursor, "base64").toString("utf8"),
+            ) as Record<string, unknown>,
+          }
+        : {}),
+    }),
+  );
+  return {
+    meetings: (Items ?? []) as Meeting[],
+    ...(LastEvaluatedKey
+      ? {
+          cursor: Buffer.from(JSON.stringify(LastEvaluatedKey)).toString(
+            "base64",
+          ),
+        }
+      : {}),
+  };
+}
+
 /**
  * Idempotent batched append keyed by the client-minted `seq`: a replayed batch
  * fails the conditional put and just reports the already-stored total.
