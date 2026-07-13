@@ -182,6 +182,9 @@ export function BrainView() {
       setThreads((prev) => prev?.filter((t) => t.threadId !== target.threadId) ?? prev);
       if (threadId === target.threadId) newConversation();
       toast("Conversación eliminada");
+      // Reconcile with the backend so a deleted thread can never reappear on
+      // the next load even if the optimistic filter missed it.
+      void refetchThreads();
     } catch {
       toast.error("No se pudo eliminar la conversación");
     }
