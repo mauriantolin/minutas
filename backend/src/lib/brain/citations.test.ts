@@ -47,8 +47,26 @@ test("parseRefs dedupes repeated refs keeping first appearance", () => {
 });
 
 test("parseRefs ignores malformed markers", () => {
-  const refs = parseRefs("[M:m1] [N:] [M:m1:3] [X:m1:T1] [M:a b:T1]");
+  const refs = parseRefs("[N:] [M:m1:3] [X:m1:T1] [M:a b:T1]");
   assert.deepEqual(refs, []);
+});
+
+test("parseRefs accepts a turn-less meeting ref (summary/digest chunk)", () => {
+  const refs = parseRefs("Según el resumen [M:mtg-1] y el turno [M:mtg-1:T4].");
+  assert.deepEqual(refs, [
+    { ref: "M:mtg-1", kind: "meeting", id: "mtg-1" },
+    { ref: "M:mtg-1:T4", kind: "meeting", id: "mtg-1", turnId: "T4" },
+  ]);
+});
+
+test("resolveCitations builds a turn-less meeting url and no turn field", () => {
+  const { answerMd, citations } = resolveCitations("Resumen [M:mtg-1].", [
+    meetingHit("mtg-1"),
+  ]);
+  assert.equal(answerMd, "Resumen [M:mtg-1].");
+  assert.equal(citations.length, 1);
+  assert.equal(citations[0]!.url, "/meeting?id=mtg-1");
+  assert.equal(citations[0]!.turnId, undefined);
 });
 
 test("parseRefs returns empty for empty answer", () => {

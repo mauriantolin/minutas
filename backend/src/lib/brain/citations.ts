@@ -1,7 +1,7 @@
 import type { BrainCitation } from "@teams-agent-core/shared";
 import type { QueryHit } from "./vectorstore.js";
 
-const REF_RE = /\[M:([A-Za-z0-9._-]+):(T\d+)\]|\[N:([A-Za-z0-9._-]+)\]/g;
+const REF_RE = /\[M:([A-Za-z0-9._-]+)(?::(T\d+))?\]|\[N:([A-Za-z0-9._-]+)\]/g;
 
 export interface ParsedRef {
   ref: string;
@@ -16,7 +16,12 @@ export function parseRefs(answerMd: string): ParsedRef[] {
   for (const m of answerMd.matchAll(REF_RE)) {
     const parsed: ParsedRef =
       m[1] !== undefined
-        ? { ref: `M:${m[1]}:${m[2]}`, kind: "meeting", id: m[1], turnId: m[2] as string }
+        ? {
+            ref: m[2] ? `M:${m[1]}:${m[2]}` : `M:${m[1]}`,
+            kind: "meeting",
+            id: m[1],
+            ...(m[2] ? { turnId: m[2] } : {}),
+          }
         : { ref: `N:${m[3]}`, kind: "note", id: m[3] as string };
     if (seen.has(parsed.ref)) continue;
     seen.add(parsed.ref);

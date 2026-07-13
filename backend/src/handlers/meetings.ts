@@ -15,6 +15,7 @@ import {
   askMeeting,
   cleanTranscriptContext,
 } from "../lib/agent.js";
+import { removeMeetingVectors } from "../lib/brain/indexer.js";
 import { tenantOf, json } from "../lib/http.js";
 
 /** Pipeline artifacts are absent until their phase ran — that's a valid state. */
@@ -57,6 +58,7 @@ export const del: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) => {
   const { tenantId } = tenantOf(event);
   const id = event.pathParameters?.id;
   if (!id) return json(400, { error: "id required" });
+  await removeMeetingVectors(tenantId, id);
   await deleteMeeting(tenantId, id);
   return json(200, { deleted: id });
 };

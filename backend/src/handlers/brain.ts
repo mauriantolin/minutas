@@ -45,10 +45,15 @@ const renderHistory = (thread: BrainThread | undefined): string =>
     )
     .join("\n");
 
-const refOf = (metadata: Record<string, unknown>): string =>
-  metadata.type === "note"
-    ? `N:${String(metadata.noteId)}`
-    : `M:${String(metadata.meetingId)}:${String(metadata.turnStart ?? "T1")}`;
+const refOf = (metadata: Record<string, unknown>): string => {
+  if (metadata.type === "note") return `N:${String(metadata.noteId)}`;
+  const meetingId = String(metadata.meetingId);
+  // Summary/digest chunks have no turn anchor — cite the meeting without one
+  // rather than fabricating T1, which would deep-link to an unrelated turn.
+  return metadata.turnStart
+    ? `M:${meetingId}:${String(metadata.turnStart)}`
+    : `M:${meetingId}`;
+};
 
 const renderChunks = (hits: QueryHit[]): string =>
   hits

@@ -316,3 +316,29 @@ test("long note splits into ~650-token windows without duplicating content", () 
   const joined = chunks.map(bodyOf).join("\n\n");
   assert.equal(joined.split("marcador-unico-parrafo-final").length - 1, 1);
 });
+
+test("chapter of oversized turns terminates (each turn its own window)", () => {
+  // Each turn alone exceeds CHAPTER_MAX_TOKENS, so every window is a single
+  // turn. The 1-turn overlap must still advance or chunking loops forever.
+  const huge = Array(30).fill(FRASE).join(" ");
+  const bigChapterMeeting: Meeting & { summary?: MeetingSummary } = meeting;
+  const bigClean: CleanTranscript = {
+    chapters: [{ startTime: 0, title: "Bloque denso" }],
+    turns: ["T1", "T2", "T3", "T4"].map((id, i) => ({
+      id,
+      sourceIds: [`s${i + 1}`],
+      speaker: "Ana García",
+      startTime: i * 60,
+      endTime: i * 60 + 59,
+      text: huge,
+      tags: [],
+    })),
+  };
+  const chunks = chunkMeeting(bigChapterMeeting, { clean: bigClean });
+  const windows = chunks.filter((c) => c.metadata.type === "chapter");
+  assert.equal(windows.length, 4);
+  assert.deepEqual(
+    windows.map((w) => w.metadata.turnStart),
+    ["T1", "T2", "T3", "T4"],
+  );
+});

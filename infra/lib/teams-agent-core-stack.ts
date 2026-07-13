@@ -664,11 +664,31 @@ export class TeamsAgentCoreStack extends Stack {
       .when(gateEFail(), opusFinal)
       .otherwise(publish);
 
+    // Post-publish vector indexing. The meeting is already published, so an
+    // indexing failure must never re-route through SetError and stamp a
+    // terminal "failed" over a live meeting; indexFail records indexStatus and
+    // the execution still SUCCEEDs (published meeting == SUCCEEDED execution).
+    // Every path that leaves a published/needs_review meeting converges here so
+    // the account memory stays complete; a failed index is retryable via
+    // POST /admin/reindex.
+    const indexMeetingTask = workerTask(
+      "IndexMeeting",
+      "index",
+      JsonPath.DISCARD,
+    );
+    const indexFail = workerTask(
+      "IndexMeetingFail",
+      "indexFail",
+      JsonPath.DISCARD,
+    );
+    indexMeetingTask.addCatch(indexFail, { resultPath: "$.indexError" });
+    indexMeetingTask.next(new Succeed(this, "Indexed"));
+    indexFail.next(new Succeed(this, "IndexingRecorded"));
+
     // A parse/validation failure inside an LLM phase already published the
-    // meeting as needs_review (a valid terminal state, §2-P7): the execution
-    // must SUCCEED there instead of running the next phase against a missing
+    // meeting as needs_review (a valid terminal state, §2-P7): index it and
+    // SUCCEED there instead of running the next phase against a missing
     // artifact and letting SetError stamp a terminal "failed" over it.
-    const needsReviewPublished = new Succeed(this, "NeedsReviewPublished");
     const parseGuard = (id: string, statusPath: string, next: IChainable) =>
       new Choice(this, id)
         .when(
@@ -676,7 +696,7 @@ export class TeamsAgentCoreStack extends Stack {
             Condition.isPresent(statusPath),
             Condition.stringEquals(statusPath, "needs_review"),
           ),
-          needsReviewPublished,
+          indexMeetingTask,
         )
         .otherwise(next);
 
@@ -707,27 +727,6 @@ export class TeamsAgentCoreStack extends Stack {
       parseGuard("VerifyOpusOk", "$.verify.status", publishWithFlag),
     );
 
-    // Post-publish vector indexing: the meeting is already published, so an
-    // indexing failure must never re-route through SetError and stamp a
-    // terminal "failed" over a live meeting — it records indexStatus instead.
-    const indexMeetingTask = workerTask(
-      "IndexMeeting",
-      "index",
-      JsonPath.DISCARD,
-    );
-    const indexFail = workerTask(
-      "IndexMeetingFail",
-      "indexFail",
-      JsonPath.DISCARD,
-    );
-    indexMeetingTask.addCatch(indexFail, { resultPath: "$.indexError" });
-    indexMeetingTask.next(new Succeed(this, "Indexed"));
-    indexFail.next(
-      new Fail(this, "IndexingFailed", {
-        error: "IndexingFailed",
-        cause: "vector indexing failed after publish",
-      }),
-    );
     publish.next(indexMeetingTask);
     publishWithFlag.next(indexMeetingTask);
 
@@ -865,14 +864,15 @@ export class TeamsAgentCoreStack extends Stack {
       handler: "del",
       runtime: Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
-      environment: fnEnv,
+      environment: brainEnv,
       bundling,
     });
     // Prefix delete reads the meeting item, queries SEGS# chunks and lists the
-    // S3 prefix before deleting.
+    // S3 prefix before deleting; it also purges the meeting's vectors.
     table.grantReadWriteData(meetingsDelete);
     transcripts.grantRead(meetingsDelete);
     transcripts.grantDelete(meetingsDelete);
+    meetingsDelete.addToRolePolicy(vectorWrite);
 
     // Admin API: Cognito user management, gated to the "admin" group in-handler.
     const adminFn = new NodejsFunction(this, "AdminFn", {

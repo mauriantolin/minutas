@@ -58,8 +58,8 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (
         createdAt: now,
         updatedAt: now,
       };
-      await putNote(note);
       await tryIndex(note);
+      await putNote(note);
       return json(201, note);
     }
 
@@ -91,12 +91,14 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (
         note.cleanText = cleanText;
       }
       note.updatedAt = new Date().toISOString();
-      await putNote(note);
       await tryIndex(note);
+      await putNote(note);
       return json(200, note);
     }
 
     case "DELETE /notes/{id}": {
+      const note = await getNote(tenantId, sub, noteId!);
+      if (!note) return json(404, { error: "not found" });
       await removeNoteVectors(tenantId, sub, noteId!);
       await deleteNote(tenantId, sub, noteId!);
       return json(200, { ok: true });

@@ -7,7 +7,6 @@ import {
   getMeetingItem,
   getSummaryArtifact,
   putIndexedKeys,
-  putNote,
   updateMeeting,
 } from "../store.js";
 import { chunkMeeting, chunkNote, type BrainChunk } from "./chunker.js";
@@ -34,13 +33,23 @@ async function ifExists<T>(load: Promise<T>): Promise<T | undefined> {
  * Deterministic chunk keys make this an overwrite: re-embedding replaces the
  * same vectors, and only keys the new chunking no longer emits get deleted.
  */
+// Warm-container memo: the tenant index is created once and then reused, so
+// skip the GetIndex round-trip after the first write in this Lambda instance.
+const ensuredIndexes = new Set<string>();
+
+async function ensureIndexOnce(indexName: string): Promise<void> {
+  if (ensuredIndexes.has(indexName)) return;
+  await ensureIndex(indexName);
+  ensuredIndexes.add(indexName);
+}
+
 async function writeChunks(
   tenantId: string,
   doc: IndexedDoc,
   chunks: BrainChunk[],
 ): Promise<string[]> {
   const indexName = indexNameForTenant(tenantId);
-  await ensureIndex(indexName);
+  await ensureIndexOnce(indexName);
   const embeddings = await embedAll(
     chunks.map((c) => c.text),
     4,
@@ -84,6 +93,10 @@ export async function indexMeeting(
   return { chunks: keys.length };
 }
 
+/**
+ * Sets `note.indexVersion` on success but does not persist — the caller owns
+ * the single DynamoDB write so a create/update costs one PutCommand, not two.
+ */
 export async function indexNote(note: Note): Promise<{ chunks: number }> {
   const chunks = chunkNote(note);
   const keys = await writeChunks(
@@ -92,7 +105,6 @@ export async function indexNote(note: Note): Promise<{ chunks: number }> {
     chunks,
   );
   note.indexVersion = INDEX_VERSION;
-  await putNote(note);
   return { chunks: keys.length };
 }
 

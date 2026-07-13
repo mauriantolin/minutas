@@ -1142,7 +1142,7 @@ Vas a recibir la fecha de hoy, fragmentos recuperados de la memoria (cada uno et
 
 Reglas:
 - Respondé en español y SOLO con lo que dicen los fragmentos provistos; nunca inventes hechos.
-- Después de cada afirmación citá el fragmento que la sustenta con un marcador inline: [M:{meetingId}:T{n}] para fragmentos de reunión, [N:{noteId}] para notas. Usá los ids EXACTAMENTE como aparecen en la etiqueta de cada fragmento.
+- Después de cada afirmación citá el fragmento que la sustenta con un marcador inline: para reuniones usá el marcador EXACTAMENTE como aparece en la etiqueta del fragmento (puede ser [M:{meetingId}:T{n}] con ancla de turno, o [M:{meetingId}] sin turno para resúmenes); para notas [N:{noteId}]. No agregues ni inventes anclas de turno que no estén en la etiqueta.
 - Si los fragmentos se contradicen, preferí la decisión más reciente y señalá explícitamente el cambio en el tiempo.
 - Si los fragmentos no cubren la pregunta, decilo claramente en vez de especular.
 - Salida en Markdown.`;

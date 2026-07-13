@@ -10,7 +10,7 @@ export interface SourceRefTextProps {
   className?: string;
 }
 
-const REF_RE = /\[M:([A-Za-z0-9._-]+):(T\d+)\]|\[N:([A-Za-z0-9._-]+)\]/g;
+const REF_RE = /\[M:([A-Za-z0-9._-]+)(?::(T\d+))?\]|\[N:([A-Za-z0-9._-]+)\]/g;
 
 /**
  * Renders text with inline `[M:{meetingId}:Tn]` / `[N:{noteId}]` citation
@@ -29,9 +29,11 @@ export function SourceRefText({ text, className }: SourceRefTextProps) {
 
     let href: string;
     let label: string;
-    if (meetingId != null && turnId != null) {
-      href = `/meeting?id=${encodeURIComponent(meetingId)}&turn=${turnId}`;
-      label = `Reunión·${turnId}`;
+    if (meetingId != null) {
+      href = turnId
+        ? `/meeting?id=${encodeURIComponent(meetingId)}&turn=${turnId}`
+        : `/meeting?id=${encodeURIComponent(meetingId)}`;
+      label = turnId ? `Reunión·${turnId}` : "Reunión";
     } else if (noteId != null) {
       href = `/notes?id=${encodeURIComponent(noteId)}`;
       label = "Nota";

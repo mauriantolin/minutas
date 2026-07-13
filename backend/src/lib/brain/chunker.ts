@@ -181,7 +181,9 @@ function splitTurnWindows(turns: CleanTurn[]): CleanTurn[][] {
     }
     windows.push(turns.slice(i, j));
     if (j >= turns.length) break;
-    i = j - 1;
+    // 1-turn overlap, but always advance: a single-turn window (j === i+1)
+    // would otherwise pin i in place and loop forever.
+    i = Math.max(i + 1, j - 1);
   }
   return windows;
 }
