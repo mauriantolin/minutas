@@ -106,6 +106,49 @@ export interface MeetingDetail extends Meeting {
   verification?: { claims?: VerifiedClaim[] };
 }
 
+export type NoteSource = "typed" | "voice";
+
+export interface Note {
+  noteId: string;
+  title: string;
+  rawText: string;
+  cleanText: string;
+  source: NoteSource;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BrainCitation {
+  ref: string;
+  kind: "meeting" | "note";
+  id: string;
+  turnId?: string;
+  title: string;
+  date?: string;
+  url: string;
+}
+
+export interface BrainMessage {
+  role: "user" | "assistant";
+  text: string;
+  citations?: BrainCitation[];
+  at: string;
+}
+
+export interface BrainThreadSummary {
+  threadId: string;
+  title: string;
+  updatedAt: string;
+}
+
+export interface BrainThread {
+  threadId: string;
+  title: string;
+  messages: BrainMessage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export const listMeetings = (t: string): Promise<{ meetings: Meeting[] }> =>
   req(t, "/meetings");
 
@@ -120,3 +163,37 @@ export const deleteMeeting = (t: string, id: string): Promise<{ deleted: string 
 
 export const reprocessMeeting = (t: string, id: string): Promise<{ meetingId: string; executionArn: string }> =>
   req(t, `/meetings/${encodeURIComponent(id)}/reprocess`, { method: "POST", body: JSON.stringify({}) });
+
+export const brainAsk = (
+  t: string,
+  body: { threadId?: string; message: string },
+): Promise<{ threadId: string; answer: string; citations: BrainCitation[] }> =>
+  req(t, "/brain/ask", { method: "POST", body: JSON.stringify(body) });
+
+export const listBrainThreads = (t: string): Promise<{ threads: BrainThreadSummary[] }> =>
+  req(t, "/brain/threads");
+
+export const getBrainThread = (t: string, id: string): Promise<BrainThread> =>
+  req(t, `/brain/threads/${encodeURIComponent(id)}`);
+
+export const deleteBrainThread = (t: string, id: string): Promise<{ ok: boolean }> =>
+  req(t, `/brain/threads/${encodeURIComponent(id)}`, { method: "DELETE" });
+
+export const listNotes = (t: string): Promise<{ notes: Note[] }> =>
+  req(t, "/notes");
+
+export const createNote = (t: string, body: { rawText: string; source: NoteSource }): Promise<Note> =>
+  req(t, "/notes", { method: "POST", body: JSON.stringify(body) });
+
+export const getNote = (t: string, id: string): Promise<Note> =>
+  req(t, `/notes/${encodeURIComponent(id)}`);
+
+export const updateNote = (
+  t: string,
+  id: string,
+  body: { title?: string; rawText?: string; cleanText?: string; reclean?: boolean },
+): Promise<Note> =>
+  req(t, `/notes/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) });
+
+export const deleteNote = (t: string, id: string): Promise<{ ok: boolean }> =>
+  req(t, `/notes/${encodeURIComponent(id)}`, { method: "DELETE" });

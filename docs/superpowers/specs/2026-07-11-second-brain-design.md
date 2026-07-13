@@ -119,10 +119,10 @@ Why streaming (not the existing batch path): the batch path is coupled to the me
 ## 10. Risks & open items
 
 1. **No BM25/hybrid in v1** — exact codes/rare names can miss; extraction micro-chunks concentrate the most-queried facts; entity channel is the planned v1.1 add.
-2. **CFN/CDK support for `AWS::S3Vectors::*` unverified** — fallback: `AwsCustomResource` or one-time CLI creation of the vector bucket; indexes are created lazily via SDK anyway.
-3. **Native s3vectors filter grammar unverified** (OR-across-conditions) — fallback shape documented in §2.
+2. **CFN/CDK support for `AWS::S3Vectors::*`** — **RESOLVED 2026-07-13:** supported — `CfnVectorBucket` L1 lands in aws-cdk-lib ≥2.223.0 (repo locks 2.261.0); indexes stay lazy via SDK.
+3. **Native s3vectors filter grammar** — **RESOLVED 2026-07-13:** grammar supports `$or` across conditions, so the notes-privacy filter is one native query; caveat: `QueryVectors` with `filter` also needs `s3vectors:GetVectors` in IAM.
 4. **29s ceiling** — instrument per-stage budgets; reduce topK before escalating models.
-5. **Titan V2 Spanish quality** — covered by the pre-index eval gate.
+5. **Titan V2 Spanish quality** — **RESOLVED 2026-07-13:** Titan V2 1024/cosine adopted now; eval harness at `scripts/brain-eval.mjs` ready to run once a golden corpus exists; `INDEX_VERSION` covers any migration.
 6. **Tenant isolation is backend-derived** — mandatory **cross-tenant integration test**: tenant A's query must return zero of tenant B's documents; unit tests on index-name derivation and notes `ownerSub` filter.
 
 ## 11. Testing

@@ -263,6 +263,100 @@ const TOOL_CONFIG: ToolConfiguration = {
         },
       },
     },
+    {
+      toolSpec: {
+        name: "plan_search",
+        description:
+          "Deliver the retrieval plan for a question over the account memory: a self-contained Spanish search query, plus an optional explicit time range and target content types.",
+        inputSchema: {
+          json: {
+            type: "object",
+            properties: {
+              searchQuery: {
+                type: "string",
+                description:
+                  "Self-contained Spanish search query rewritten from the question and the conversation history.",
+              },
+              timeIsExplicit: {
+                type: "boolean",
+                description:
+                  "True only when the user named an explicit time period.",
+              },
+              fromEpoch: {
+                type: "number",
+                description:
+                  "Range start as unix SECONDS; only when the period is explicit.",
+              },
+              toEpoch: {
+                type: "number",
+                description:
+                  "Range end as unix SECONDS; only when the period is explicit.",
+              },
+              targetTypes: {
+                type: "array",
+                items: {
+                  type: "string",
+                  enum: ["chapter", "extraction", "summary", "digest", "note"],
+                },
+                description:
+                  "Only when the question clearly targets specific content types.",
+              },
+            },
+            required: ["searchQuery", "timeIsExplicit"],
+          },
+        },
+      },
+    },
+    {
+      toolSpec: {
+        name: "clean_note",
+        description:
+          "Deliver the cleaned personal note: a short Spanish title and a faithful structured Markdown cleanup of the raw text.",
+        inputSchema: {
+          json: {
+            type: "object",
+            properties: {
+              title: {
+                type: "string",
+                description: "Spanish title, at most 60 characters.",
+              },
+              cleanText: {
+                type: "string",
+                description:
+                  "Faithful structured Markdown cleanup of the raw note text.",
+              },
+            },
+            required: ["title", "cleanText"],
+          },
+        },
+      },
+    },
+    {
+      toolSpec: {
+        name: "record_brain_answer",
+        description:
+          "Deliver the answer over the account memory as Spanish Markdown with inline citation markers, plus the list of cited refs.",
+        inputSchema: {
+          json: {
+            type: "object",
+            properties: {
+              answer_md: {
+                type: "string",
+                description:
+                  "Spanish Markdown answer with inline [M:{meetingId}:T{n}] / [N:{noteId}] markers after each claim.",
+              },
+              citations: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                  'Refs cited in the answer, e.g. "M:<meetingId>:T4" or "N:<noteId>".',
+              },
+            },
+            required: ["answer_md", "citations"],
+          },
+        },
+      },
+    },
   ],
   // Forced tool use, but identical across phases: tool SELECTION lives in the
   // post-breakpoint instruction because toolChoice participates in the cache key.
@@ -475,6 +569,22 @@ function num(v: unknown, path: string): number {
 function optStr(v: unknown, path: string): string | undefined {
   if (v === undefined || v === null || v === "") return undefined;
   return str(v, path);
+}
+
+function optNum(v: unknown, path: string): number | undefined {
+  if (v === undefined || v === null) return undefined;
+  return num(v, path);
+}
+
+function bool(v: unknown, path: string): boolean {
+  if (typeof v !== "boolean") {
+    throw new StructuredOutputError(`${path}: expected boolean`);
+  }
+  return v;
+}
+
+function strArr(v: unknown, path: string): string[] {
+  return arr(v, path).map((s, i) => str(s, `${path}[${i}]`));
 }
 
 const VERDICTS: readonly VerificationVerdict[] = [
@@ -915,4 +1025,169 @@ Si la respuesta no está en la transcripción, decílo explícitamente. Sé conc
   );
   const block = res.output?.message?.content?.find((c) => "text" in c);
   return block && "text" in block ? (block.text ?? "") : "";
+}
+
+// ---------------------------------------------------------------------------
+// Second brain — planner, note cleanup and cited answer over the account
+// memory (meetings + personal notes). Each context below is a byte-stable
+// module constant: the same cache-prefix discipline as the pipeline phases.
+// ---------------------------------------------------------------------------
+
+const BRAIN_PLANNER_CONTEXT = `PLANIFICADOR DE BÚSQUEDA EN LA MEMORIA DE LA CUENTA (reuniones y notas personales):
+
+Vas a recibir la fecha de hoy, el historial de la conversación (si existe) y la pregunta del usuario.
+
+Reglas:
+- Reescribí la pregunta como una consulta de búsqueda autocontenida en español: resolvé pronombres y referencias al historial ("eso", "esa reunión", "el tema anterior") para que la consulta se entienda sin ningún contexto adicional.
+- timeIsExplicit=true SOLO cuando el usuario nombra un período explícito ("la semana pasada", "en junio", "ayer", "el 3 de marzo"). Una inferencia o suposición temporal NO cuenta como explícito.
+- fromEpoch/toEpoch: timestamps unix en SEGUNDOS, calculados a partir de la fecha de hoy, y SOLO cuando el período es explícito; en cualquier otro caso omitilos.
+- targetTypes: opcional, solo cuando la pregunta apunta claramente a un tipo de contenido (por ejemplo "mis notas" → ["note"], "el resumen" → ["summary"]).`;
+
+export interface BrainSearchPlan {
+  searchQuery: string;
+  timeIsExplicit: boolean;
+  fromEpoch?: number;
+  toEpoch?: number;
+  targetTypes?: string[];
+}
+
+export async function planBrainSearch(opts: {
+  historyBlock: string;
+  message: string;
+  todayIso: string;
+}): Promise<BrainSearchPlan> {
+  const history = opts.historyBlock.trim()
+    ? `HISTORIAL DE LA CONVERSACIÓN:\n${opts.historyBlock}\n\n`
+    : "";
+  const instruction = `Hoy es ${opts.todayIso}.
+
+${history}Pregunta del usuario: ${opts.message}
+
+TAREA: armá el plan de búsqueda según las reglas del contexto y llamá a plan_search.`;
+
+  return converseTool({
+    label: "brain-plan",
+    tier: "haiku",
+    context: BRAIN_PLANNER_CONTEXT,
+    instruction,
+    tool: "plan_search",
+    maxTokens: 1024,
+    throttleRetries: 2,
+    validate: (input) => {
+      const o = rec(input, "$");
+      const searchQuery = str(o.searchQuery, "$.searchQuery");
+      if (!searchQuery.trim()) {
+        throw new StructuredOutputError("$.searchQuery: empty");
+      }
+      const fromEpoch = optNum(o.fromEpoch, "$.fromEpoch");
+      const toEpoch = optNum(o.toEpoch, "$.toEpoch");
+      const targetTypes =
+        o.targetTypes === undefined || o.targetTypes === null
+          ? undefined
+          : strArr(o.targetTypes, "$.targetTypes");
+      return {
+        searchQuery,
+        timeIsExplicit: bool(o.timeIsExplicit, "$.timeIsExplicit"),
+        ...(fromEpoch !== undefined ? { fromEpoch } : {}),
+        ...(toEpoch !== undefined ? { toEpoch } : {}),
+        ...(targetTypes?.length ? { targetTypes } : {}),
+      };
+    },
+  });
+}
+
+const NOTE_CLEANUP_CONTEXT = `LIMPIEZA DE NOTA PERSONAL (dictada o tipeada):
+
+Vas a recibir el texto crudo de una nota personal.
+
+Reglas:
+- title: título breve en español, máximo 60 caracteres, que capture el tema de la nota.
+- cleanText: versión limpia y estructurada de la nota, en Markdown, fiel al original.
+- Conservá TODOS los hechos, números, fechas, montos y nombres propios exactamente como aparecen.
+- Corregí artefactos de dictado (repeticiones, falsos comienzos, muletillas, palabras cortadas), puntuación y mayúsculas.
+- Organizá en párrafos o listas cuando la estructura del contenido lo pida; nunca inventes contenido que no esté en el texto.`;
+
+export async function cleanNoteText(
+  rawText: string,
+): Promise<{ title: string; cleanText: string }> {
+  const instruction = `TEXTO CRUDO DE LA NOTA:
+${rawText}
+
+TAREA: limpiá la nota según las reglas del contexto y llamá a clean_note.`;
+
+  return converseTool({
+    label: "note-clean",
+    tier: "haiku",
+    context: NOTE_CLEANUP_CONTEXT,
+    instruction,
+    tool: "clean_note",
+    maxTokens: 4096,
+    throttleRetries: 2,
+    validate: (input) => {
+      const o = rec(input, "$");
+      const title = str(o.title, "$.title").trim().slice(0, 60);
+      if (!title) throw new StructuredOutputError("$.title: empty");
+      const cleanText = str(o.cleanText, "$.cleanText");
+      if (!cleanText.trim()) {
+        throw new StructuredOutputError("$.cleanText: empty");
+      }
+      return { title, cleanText };
+    },
+  });
+}
+
+const BRAIN_ANSWER_CONTEXT = `RESPUESTA SOBRE LA MEMORIA DE LA CUENTA (reuniones y notas personales):
+
+Vas a recibir la fecha de hoy, fragmentos recuperados de la memoria (cada uno etiquetado con su referencia), el historial de la conversación (si existe) y la pregunta del usuario.
+
+Reglas:
+- Respondé en español y SOLO con lo que dicen los fragmentos provistos; nunca inventes hechos.
+- Después de cada afirmación citá el fragmento que la sustenta con un marcador inline: [M:{meetingId}:T{n}] para fragmentos de reunión, [N:{noteId}] para notas. Usá los ids EXACTAMENTE como aparecen en la etiqueta de cada fragmento.
+- Si los fragmentos se contradicen, preferí la decisión más reciente y señalá explícitamente el cambio en el tiempo.
+- Si los fragmentos no cubren la pregunta, decilo claramente en vez de especular.
+- Salida en Markdown.`;
+
+export interface BrainAnswer {
+  answerMd: string;
+  citations: string[];
+}
+
+export async function generateBrainAnswer(opts: {
+  chunksBlock: string;
+  historyBlock: string;
+  question: string;
+  todayIso: string;
+}): Promise<BrainAnswer> {
+  const history = opts.historyBlock.trim()
+    ? `HISTORIAL DE LA CONVERSACIÓN:\n${opts.historyBlock}\n\n`
+    : "";
+  const instruction = `Hoy es ${opts.todayIso}.
+
+FRAGMENTOS RECUPERADOS:
+${opts.chunksBlock}
+
+${history}Pregunta del usuario: ${opts.question}
+
+TAREA: redactá la respuesta según las reglas del contexto y llamá a record_brain_answer.`;
+
+  return converseTool({
+    label: "brain-answer",
+    tier: "haiku",
+    context: BRAIN_ANSWER_CONTEXT,
+    instruction,
+    tool: "record_brain_answer",
+    maxTokens: 4096,
+    throttleRetries: 2,
+    validate: (input) => {
+      const o = rec(input, "$");
+      const answerMd = str(o.answer_md, "$.answer_md");
+      if (!answerMd.trim()) {
+        throw new StructuredOutputError("$.answer_md: empty");
+      }
+      return {
+        answerMd,
+        citations: strArr(o.citations ?? [], "$.citations"),
+      };
+    },
+  });
 }

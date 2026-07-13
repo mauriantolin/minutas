@@ -21,6 +21,7 @@ import type {
   AudioSource,
   BatchJobTokenRecord,
   BatchMergeResult,
+  BrainThread,
   CleanTranscript,
   CorrelatedSegment,
   DiarizedSegment,
@@ -29,6 +30,7 @@ import type {
   Meeting,
   MeetingIngestPayload,
   MeetingRecord,
+  Note,
   SummaryArtifact,
   VerificationReport,
 } from "@teams-agent-core/shared";
@@ -48,6 +50,13 @@ const segSk = (meetingId: string, seq: number) =>
 // jobName-keyed (not tenant-keyed): the Transcribe job-state event carries only
 // the job name, so the callback Lambda has no tenant context to build a PK from.
 const batchJobPk = (jobName: string) => `BATCHJOB#${jobName}`;
+// ownerSub baked into the SK: notes/threads are private to their owner, so a
+// begins_with on `NOTE#{sub}#` can never leak another user's items.
+const noteSk = (ownerSub: string, noteId: string) =>
+  `NOTE#${ownerSub}#${noteId}`;
+const threadSk = (ownerSub: string, threadId: string) =>
+  `THREAD#${ownerSub}#${threadId}`;
+const idxSk = (doc: string) => `IDX#${doc}`;
 
 export async function putMeeting(meeting: Meeting): Promise<void> {
   await ddb.send(
@@ -554,6 +563,192 @@ export async function deleteBatchJobToken(jobName: string): Promise<void> {
     new DeleteCommand({
       TableName: TABLE,
       Key: { PK: batchJobPk(jobName), SK: "TOKEN" },
+    }),
+  );
+}
+
+// --- Second Brain: notes, chat threads, index bookkeeping ---
+
+function stripItemKeys<T>(item: Record<string, unknown>): T {
+  const { PK: _pk, SK: _sk, ...rest } = item;
+  return rest as T;
+}
+
+export async function putNote(note: Note): Promise<void> {
+  await ddb.send(
+    new PutCommand({
+      TableName: TABLE,
+      Item: {
+        PK: pk(note.tenantId),
+        SK: noteSk(note.ownerSub, note.noteId),
+        ...note,
+      },
+    }),
+  );
+}
+
+export async function getNote(
+  tenantId: string,
+  ownerSub: string,
+  noteId: string,
+): Promise<Note | undefined> {
+  const { Item } = await ddb.send(
+    new GetCommand({
+      TableName: TABLE,
+      Key: { PK: pk(tenantId), SK: noteSk(ownerSub, noteId) },
+    }),
+  );
+  return Item ? stripItemKeys<Note>(Item) : undefined;
+}
+
+export async function listNotes(
+  tenantId: string,
+  ownerSub: string,
+): Promise<Note[]> {
+  const notes: Note[] = [];
+  let cursor: Record<string, unknown> | undefined;
+  do {
+    const page = await ddb.send(
+      new QueryCommand({
+        TableName: TABLE,
+        KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
+        ExpressionAttributeValues: {
+          ":pk": pk(tenantId),
+          ":sk": `NOTE#${ownerSub}#`,
+        },
+        ScanIndexForward: false,
+        ExclusiveStartKey: cursor,
+      }),
+    );
+    notes.push(...(page.Items ?? []).map((i) => stripItemKeys<Note>(i)));
+    cursor = page.LastEvaluatedKey;
+  } while (cursor);
+  return notes;
+}
+
+export async function deleteNote(
+  tenantId: string,
+  ownerSub: string,
+  noteId: string,
+): Promise<void> {
+  await ddb.send(
+    new DeleteCommand({
+      TableName: TABLE,
+      Key: { PK: pk(tenantId), SK: noteSk(ownerSub, noteId) },
+    }),
+  );
+}
+
+export async function putThread(
+  tenantId: string,
+  ownerSub: string,
+  thread: BrainThread,
+): Promise<void> {
+  await ddb.send(
+    new PutCommand({
+      TableName: TABLE,
+      Item: {
+        PK: pk(tenantId),
+        SK: threadSk(ownerSub, thread.threadId),
+        ...thread,
+      },
+    }),
+  );
+}
+
+export async function getThread(
+  tenantId: string,
+  ownerSub: string,
+  threadId: string,
+): Promise<BrainThread | undefined> {
+  const { Item } = await ddb.send(
+    new GetCommand({
+      TableName: TABLE,
+      Key: { PK: pk(tenantId), SK: threadSk(ownerSub, threadId) },
+    }),
+  );
+  return Item ? stripItemKeys<BrainThread>(Item) : undefined;
+}
+
+export async function listThreads(
+  tenantId: string,
+  ownerSub: string,
+): Promise<Pick<BrainThread, "threadId" | "title" | "updatedAt">[]> {
+  const threads: Pick<BrainThread, "threadId" | "title" | "updatedAt">[] = [];
+  let cursor: Record<string, unknown> | undefined;
+  do {
+    const page = await ddb.send(
+      new QueryCommand({
+        TableName: TABLE,
+        KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
+        ExpressionAttributeValues: {
+          ":pk": pk(tenantId),
+          ":sk": `THREAD#${ownerSub}#`,
+        },
+        ScanIndexForward: false,
+        ExclusiveStartKey: cursor,
+      }),
+    );
+    for (const item of (page.Items ?? []) as BrainThread[]) {
+      threads.push({
+        threadId: item.threadId,
+        title: item.title,
+        updatedAt: item.updatedAt,
+      });
+    }
+    cursor = page.LastEvaluatedKey;
+  } while (cursor);
+  return threads;
+}
+
+export async function deleteThread(
+  tenantId: string,
+  ownerSub: string,
+  threadId: string,
+): Promise<void> {
+  await ddb.send(
+    new DeleteCommand({
+      TableName: TABLE,
+      Key: { PK: pk(tenantId), SK: threadSk(ownerSub, threadId) },
+    }),
+  );
+}
+
+export async function putIndexedKeys(
+  tenantId: string,
+  doc: `MEETING#${string}` | `NOTE#${string}`,
+  keys: string[],
+  indexVersion: number,
+): Promise<void> {
+  await ddb.send(
+    new PutCommand({
+      TableName: TABLE,
+      Item: { PK: pk(tenantId), SK: idxSk(doc), keys, indexVersion },
+    }),
+  );
+}
+
+export async function getIndexedKeys(
+  tenantId: string,
+  doc: string,
+): Promise<{ keys: string[]; indexVersion: number } | undefined> {
+  const { Item } = await ddb.send(
+    new GetCommand({
+      TableName: TABLE,
+      Key: { PK: pk(tenantId), SK: idxSk(doc) },
+    }),
+  );
+  return Item as { keys: string[]; indexVersion: number } | undefined;
+}
+
+export async function deleteIndexedKeys(
+  tenantId: string,
+  doc: string,
+): Promise<void> {
+  await ddb.send(
+    new DeleteCommand({
+      TableName: TABLE,
+      Key: { PK: pk(tenantId), SK: idxSk(doc) },
     }),
   );
 }

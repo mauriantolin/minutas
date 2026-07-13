@@ -3,6 +3,7 @@ export const CONFIG = {
   apiUrl: "https://rv3wzr5llg.execute-api.us-east-1.amazonaws.com",
   userPoolId: "us-east-1_8iPeU4V78",
   userPoolClientId: "18m3lcii9uq8qd3k3f59kplgns",
+  identityPoolId: "us-east-1:846a80da-00b1-4db1-8ba5-206249505f29",
 };
 
 /** White-label product name — never hardcode a brand elsewhere (spec §0). */

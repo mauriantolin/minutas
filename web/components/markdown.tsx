@@ -10,6 +10,8 @@ export interface MarkdownProps {
   onNavigate?: (turnId: string) => void;
   /** When provided, [Tn] refs not in the set render as plain text. */
   knownIds?: ReadonlySet<string>;
+  /** Overrides inline text rendering; defaults to TurnRefText for [Tn] anchors. */
+  renderInline?: (text: string, key: number) => React.ReactNode;
   className?: string;
 }
 
@@ -18,11 +20,18 @@ export interface MarkdownProps {
 // and emphasis contents still flow through TurnRefText for [Tn] anchors.
 const INLINE_RE = /\*\*([^*]+?)\*\*|`([^`]+?)`|_([^_]+?)_/g;
 
-function Inline({ text, onNavigate, knownIds }: Omit<MarkdownProps, "className">) {
-  const anchored = (s: string, key: number) =>
-    s ? (
+function Inline({
+  text,
+  onNavigate,
+  knownIds,
+  renderInline,
+}: Omit<MarkdownProps, "className">) {
+  const inline =
+    renderInline ??
+    ((s: string, key: number) => (
       <TurnRefText key={key} text={s} onNavigate={onNavigate} knownIds={knownIds} />
-    ) : null;
+    ));
+  const anchored = (s: string, key: number) => (s ? inline(s, key) : null);
 
   const nodes: React.ReactNode[] = [];
   let last = 0;
@@ -31,11 +40,7 @@ function Inline({ text, onNavigate, knownIds }: Omit<MarkdownProps, "className">
   while ((m = INLINE_RE.exec(text)) !== null) {
     if (m.index > last) nodes.push(anchored(text.slice(last, m.index), last));
     if (m[1] != null) {
-      nodes.push(
-        <strong key={m.index}>
-          <TurnRefText text={m[1]} onNavigate={onNavigate} knownIds={knownIds} />
-        </strong>,
-      );
+      nodes.push(<strong key={m.index}>{inline(m[1], m.index)}</strong>);
     } else if (m[2] != null) {
       nodes.push(
         <code
@@ -46,11 +51,7 @@ function Inline({ text, onNavigate, knownIds }: Omit<MarkdownProps, "className">
         </code>,
       );
     } else if (m[3] != null) {
-      nodes.push(
-        <em key={m.index}>
-          <TurnRefText text={m[3]} onNavigate={onNavigate} knownIds={knownIds} />
-        </em>,
-      );
+      nodes.push(<em key={m.index}>{inline(m[3], m.index)}</em>);
     }
     last = m.index + m[0].length;
   }
@@ -125,7 +126,13 @@ function parseBlocks(md: string): Block[] {
  * inline **bold** / _italic_ / `code`) with inline [Tn] citation anchors. Used by
  * the Q&A answers and anywhere the pipeline emits Markdown prose.
  */
-export function Markdown({ text, onNavigate, knownIds, className }: MarkdownProps) {
+export function Markdown({
+  text,
+  onNavigate,
+  knownIds,
+  renderInline,
+  className,
+}: MarkdownProps) {
   const blocks = parseBlocks(text);
   return (
     <div className={cn("flex flex-col gap-2", className)}>
@@ -133,7 +140,12 @@ export function Markdown({ text, onNavigate, knownIds, className }: MarkdownProp
         if (block.kind === "heading") {
           return (
             <p key={i} className="font-semibold">
-              <Inline text={block.text} onNavigate={onNavigate} knownIds={knownIds} />
+              <Inline
+                text={block.text}
+                onNavigate={onNavigate}
+                knownIds={knownIds}
+                renderInline={renderInline}
+              />
             </p>
           );
         }
@@ -149,7 +161,12 @@ export function Markdown({ text, onNavigate, knownIds, className }: MarkdownProp
             >
               {block.items.map((item, j) => (
                 <li key={j}>
-                  <Inline text={item} onNavigate={onNavigate} knownIds={knownIds} />
+                  <Inline
+                    text={item}
+                    onNavigate={onNavigate}
+                    knownIds={knownIds}
+                    renderInline={renderInline}
+                  />
                 </li>
               ))}
             </List>
@@ -157,7 +174,12 @@ export function Markdown({ text, onNavigate, knownIds, className }: MarkdownProp
         }
         return (
           <p key={i} className="whitespace-pre-wrap">
-            <Inline text={block.text} onNavigate={onNavigate} knownIds={knownIds} />
+            <Inline
+              text={block.text}
+              onNavigate={onNavigate}
+              knownIds={knownIds}
+              renderInline={renderInline}
+            />
           </p>
         );
       })}
