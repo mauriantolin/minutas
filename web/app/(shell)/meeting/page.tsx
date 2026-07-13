@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
@@ -90,6 +90,14 @@ function MeetingDetailScreen() {
     setTab("transcript");
     setNavTarget({ turnId, nonce: Date.now() });
   }, []);
+
+  const turnParam = params.get("turn");
+  const turnDeepLinkDone = useRef(false);
+  useEffect(() => {
+    if (!turnParam || turnDeepLinkDone.current || !meeting || !overrides) return;
+    turnDeepLinkDone.current = true;
+    navigateToTurn(turnParam);
+  }, [turnParam, meeting, overrides, navigateToTurn]);
 
   const turns = useMemo(
     () => (meeting && overrides ? buildTurns(meeting, overrides) : []),

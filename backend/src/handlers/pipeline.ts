@@ -71,6 +71,7 @@ import {
   type CleanDraft,
 } from "../lib/agent.js";
 import { auditTurnInvariants, hasViolations, type TurnAudit } from "../lib/invariants.js";
+import { indexMeeting } from "../lib/brain/indexer.js";
 
 /**
  * Single pipeline worker — every state in the MeetingPipeline state machine
@@ -88,6 +89,8 @@ export type PipelineWorkerPhase =
   | "verify"
   | "repair"
   | "publish"
+  | "index"
+  | "indexFail"
   | "fail";
 
 export interface PipelineWorkerEvent {
@@ -678,6 +681,18 @@ export const handler = async (
       }
       await emitPublishMetrics(pipeline, !ready);
       return result(meetingId, pipeline, status);
+    }
+
+    case "index": {
+      await indexMeeting(tenantId, meetingId);
+      return result(meetingId, pipeline, meeting.status);
+    }
+
+    // Indexing failure is post-publish: the meeting stays published, only the
+    // brain-index bookkeeping records the miss (reindex backfill picks it up).
+    case "indexFail": {
+      await updateMeeting(tenantId, meetingId, { indexStatus: "failed" });
+      return result(meetingId, pipeline, meeting.status);
     }
 
     case "fail": {

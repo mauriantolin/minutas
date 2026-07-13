@@ -6,6 +6,7 @@ import {
   RemovalPolicy,
   Stack,
   type StackProps,
+  aws_s3vectors as s3vectors,
 } from "aws-cdk-lib";
 import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
 import {
@@ -113,6 +114,16 @@ export class TeamsAgentCoreStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY,
     });
 
+    // --- Second brain: S3 Vectors bucket (per-tenant indexes created lazily) ---
+    const vectorBucket = new s3vectors.CfnVectorBucket(
+      this,
+      "BrainVectorBucket",
+      { vectorBucketName: `${this.account}-teams-agent-core-brain` },
+    );
+    const vectorBucketName = vectorBucket.vectorBucketName!;
+    const vectorBucketArn = `arn:aws:s3vectors:${this.region}:${this.account}:bucket/${vectorBucketName}`;
+    const vectorIndexArns = `${vectorBucketArn}/index/tenant-*`;
+
     // --- Auth: User Pool (login) + Identity Pool (temp creds for Transcribe) ---
     const userPool = new UserPool(this, "UserPool", {
       selfSignUpEnabled: true,
@@ -177,10 +188,44 @@ export class TeamsAgentCoreStack extends Stack {
       TRANSCRIPT_BUCKET: transcripts.bucketName,
       BEDROCK_MODEL_ID: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     };
+    const brainEnv = {
+      ...fnEnv,
+      VECTOR_BUCKET: vectorBucketName,
+      EMBED_MODEL_ID: "amazon.titan-embed-text-v2:0",
+    };
     const bundling = { format: "esm" as never, target: "node20" };
     const bedrockInvoke = new PolicyStatement({
       actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
       resources: ["*"],
+    });
+    // Foundation-model ARNs carry no account id.
+    const titanInvoke = new PolicyStatement({
+      actions: ["bedrock:InvokeModel"],
+      resources: [
+        `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
+      ],
+    });
+    // Defense-in-depth: index-level access only under the `tenant-*` pattern.
+    const vectorWrite = new PolicyStatement({
+      actions: [
+        "s3vectors:CreateIndex",
+        "s3vectors:GetIndex",
+        "s3vectors:ListIndexes",
+        "s3vectors:PutVectors",
+        "s3vectors:GetVectors",
+        "s3vectors:QueryVectors",
+        "s3vectors:DeleteVectors",
+      ],
+      resources: [vectorBucketArn, vectorIndexArns],
+    });
+    // QueryVectors with filter/returnMetadata also requires GetVectors.
+    const vectorQuery = new PolicyStatement({
+      actions: [
+        "s3vectors:QueryVectors",
+        "s3vectors:GetVectors",
+        "s3vectors:GetIndex",
+      ],
+      resources: [vectorBucketArn, vectorIndexArns],
     });
 
     // --- Async pipeline: one worker Lambda + MeetingPipeline state machine ---
@@ -268,12 +313,16 @@ export class TeamsAgentCoreStack extends Stack {
         // records pipeline.audioTimeout, so the SFN loop can stay counter-free.
         AUDIO_WAIT_TIMEOUT_SEC: "1200",
         METRICS_NAMESPACE: metricsNamespace,
+        VECTOR_BUCKET: vectorBucketName,
+        EMBED_MODEL_ID: "amazon.titan-embed-text-v2:0",
       },
       bundling,
     });
     table.grantReadWriteData(pipelineWorker);
     transcripts.grantReadWrite(pipelineWorker);
     pipelineWorker.addToRolePolicy(bedrockModelAccess);
+    pipelineWorker.addToRolePolicy(vectorWrite);
+    pipelineWorker.addToRolePolicy(titanInvoke);
     pipelineWorker.addToRolePolicy(
       new PolicyStatement({
         actions: [
@@ -615,11 +664,31 @@ export class TeamsAgentCoreStack extends Stack {
       .when(gateEFail(), opusFinal)
       .otherwise(publish);
 
+    // Post-publish vector indexing. The meeting is already published, so an
+    // indexing failure must never re-route through SetError and stamp a
+    // terminal "failed" over a live meeting; indexFail records indexStatus and
+    // the execution still SUCCEEDs (published meeting == SUCCEEDED execution).
+    // Every path that leaves a published/needs_review meeting converges here so
+    // the account memory stays complete; a failed index is retryable via
+    // POST /admin/reindex.
+    const indexMeetingTask = workerTask(
+      "IndexMeeting",
+      "index",
+      JsonPath.DISCARD,
+    );
+    const indexFail = workerTask(
+      "IndexMeetingFail",
+      "indexFail",
+      JsonPath.DISCARD,
+    );
+    indexMeetingTask.addCatch(indexFail, { resultPath: "$.indexError" });
+    indexMeetingTask.next(new Succeed(this, "Indexed"));
+    indexFail.next(new Succeed(this, "IndexingRecorded"));
+
     // A parse/validation failure inside an LLM phase already published the
-    // meeting as needs_review (a valid terminal state, §2-P7): the execution
-    // must SUCCEED there instead of running the next phase against a missing
+    // meeting as needs_review (a valid terminal state, §2-P7): index it and
+    // SUCCEED there instead of running the next phase against a missing
     // artifact and letting SetError stamp a terminal "failed" over it.
-    const needsReviewPublished = new Succeed(this, "NeedsReviewPublished");
     const parseGuard = (id: string, statusPath: string, next: IChainable) =>
       new Choice(this, id)
         .when(
@@ -627,7 +696,7 @@ export class TeamsAgentCoreStack extends Stack {
             Condition.isPresent(statusPath),
             Condition.stringEquals(statusPath, "needs_review"),
           ),
-          needsReviewPublished,
+          indexMeetingTask,
         )
         .otherwise(next);
 
@@ -657,6 +726,9 @@ export class TeamsAgentCoreStack extends Stack {
     verifyOpus.next(
       parseGuard("VerifyOpusOk", "$.verify.status", publishWithFlag),
     );
+
+    publish.next(indexMeetingTask);
+    publishWithFlag.next(indexMeetingTask);
 
     const pipeline = new StateMachine(this, "MeetingPipeline", {
       definitionBody: DefinitionBody.fromChainable(correlate),
@@ -792,14 +864,15 @@ export class TeamsAgentCoreStack extends Stack {
       handler: "del",
       runtime: Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
-      environment: fnEnv,
+      environment: brainEnv,
       bundling,
     });
     // Prefix delete reads the meeting item, queries SEGS# chunks and lists the
-    // S3 prefix before deleting.
+    // S3 prefix before deleting; it also purges the meeting's vectors.
     table.grantReadWriteData(meetingsDelete);
     transcripts.grantRead(meetingsDelete);
     transcripts.grantDelete(meetingsDelete);
+    meetingsDelete.addToRolePolicy(vectorWrite);
 
     // Admin API: Cognito user management, gated to the "admin" group in-handler.
     const adminFn = new NodejsFunction(this, "AdminFn", {
@@ -827,6 +900,56 @@ export class TeamsAgentCoreStack extends Stack {
       }),
     );
 
+    // --- Second brain: account-level chat, notes CRUD and admin backfill ---
+    const brainFn = new NodejsFunction(this, "BrainFn", {
+      entry: path.join(BACKEND_SRC, "handlers", "brain.ts"),
+      runtime: Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(29),
+      memorySize: 512,
+      environment: {
+        ...brainEnv,
+        MODEL_HAIKU: modelHaiku,
+        MODEL_SONNET: modelSonnet,
+        MODEL_OPUS: modelOpus,
+      },
+      bundling,
+    });
+    table.grantReadWriteData(brainFn);
+    brainFn.addToRolePolicy(bedrockModelAccess);
+    brainFn.addToRolePolicy(titanInvoke);
+    brainFn.addToRolePolicy(vectorQuery);
+
+    const notesFn = new NodejsFunction(this, "NotesFn", {
+      entry: path.join(BACKEND_SRC, "handlers", "notes.ts"),
+      runtime: Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(29),
+      memorySize: 512,
+      environment: {
+        ...brainEnv,
+        MODEL_HAIKU: modelHaiku,
+        MODEL_SONNET: modelSonnet,
+        MODEL_OPUS: modelOpus,
+      },
+      bundling,
+    });
+    table.grantReadWriteData(notesFn);
+    notesFn.addToRolePolicy(bedrockModelAccess);
+    notesFn.addToRolePolicy(titanInvoke);
+    notesFn.addToRolePolicy(vectorWrite);
+
+    const reindexFn = new NodejsFunction(this, "ReindexFn", {
+      entry: path.join(BACKEND_SRC, "handlers", "reindex.ts"),
+      runtime: Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(29),
+      memorySize: 1024,
+      environment: brainEnv,
+      bundling,
+    });
+    table.grantReadWriteData(reindexFn);
+    transcripts.grantRead(reindexFn);
+    reindexFn.addToRolePolicy(titanInvoke);
+    reindexFn.addToRolePolicy(vectorWrite);
+
     const authorizer = new HttpJwtAuthorizer(
       "JwtAuthorizer",
       `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}`,
@@ -836,7 +959,12 @@ export class TeamsAgentCoreStack extends Stack {
     const api = new HttpApi(this, "Api", {
       corsPreflight: {
         allowOrigins: ["*"],
-        allowMethods: [CorsHttpMethod.POST, CorsHttpMethod.GET, CorsHttpMethod.DELETE],
+        allowMethods: [
+          CorsHttpMethod.POST,
+          CorsHttpMethod.GET,
+          CorsHttpMethod.PUT,
+          CorsHttpMethod.DELETE,
+        ],
         allowHeaders: ["authorization", "content-type"],
       },
     });
@@ -918,6 +1046,53 @@ export class TeamsAgentCoreStack extends Stack {
       authorizer,
     });
 
+    const brainIntegration = new HttpLambdaIntegration(
+      "BrainIntegration",
+      brainFn,
+    );
+    api.addRoutes({
+      path: "/brain/ask",
+      methods: [HttpMethod.POST],
+      integration: brainIntegration,
+      authorizer,
+    });
+    api.addRoutes({
+      path: "/brain/threads",
+      methods: [HttpMethod.GET],
+      integration: brainIntegration,
+      authorizer,
+    });
+    api.addRoutes({
+      path: "/brain/threads/{id}",
+      methods: [HttpMethod.GET, HttpMethod.DELETE],
+      integration: brainIntegration,
+      authorizer,
+    });
+
+    const notesIntegration = new HttpLambdaIntegration(
+      "NotesIntegration",
+      notesFn,
+    );
+    api.addRoutes({
+      path: "/notes",
+      methods: [HttpMethod.POST, HttpMethod.GET],
+      integration: notesIntegration,
+      authorizer,
+    });
+    api.addRoutes({
+      path: "/notes/{id}",
+      methods: [HttpMethod.GET, HttpMethod.PUT, HttpMethod.DELETE],
+      integration: notesIntegration,
+      authorizer,
+    });
+
+    api.addRoutes({
+      path: "/admin/reindex",
+      methods: [HttpMethod.POST],
+      integration: new HttpLambdaIntegration("ReindexIntegration", reindexFn),
+      authorizer,
+    });
+
     // --- Web hosting: private S3 + CloudFront (OAC) for the Next.js dashboard ---
     const webBucket = new Bucket(this, "WebBucket", {
       blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
@@ -934,7 +1109,7 @@ export class TeamsAgentCoreStack extends Stack {
       code: FunctionCode.fromInline(`
 function handler(event) {
   var request = event.request;
-  var routes = ["/login", "/meetings", "/meeting", "/live", "/kits", "/settings", "/admin"];
+  var routes = ["/login", "/meetings", "/meeting", "/live", "/kits", "/settings", "/admin", "/brain", "/notes"];
   var uri = request.uri.endsWith("/") ? request.uri.slice(0, -1) : request.uri;
   if (routes.includes(uri)) {
     request.uri = uri + "/index.html";
@@ -975,5 +1150,6 @@ function handler(event) {
     new CfnOutput(this, "WebUrl", {
       value: `https://${distribution.distributionDomainName}`,
     });
+    new CfnOutput(this, "VectorBucketName", { value: vectorBucketName });
   }
 }

@@ -1,0 +1,25 @@
+[
+  {
+    "comment": "Golden set de ejemplo para scripts/brain-eval.mjs. Copiá este archivo (ej. a docs/brain-eval-golden.json), reemplazá los meeting ids de ejemplo por ids reales de reuniones ya indexadas del tenant y las preguntas por consultas reales de ese corpus (ideal: 20-30 pares). Corré: VECTOR_BUCKET=<bucket> TENANT_ID=<tenant id crudo del JWT> GOLDEN=docs/brain-eval-golden.json node scripts/brain-eval.mjs [--gate]. Con --gate el script sale con código 1 si hit@5 < 0.7. Las entradas sin question/expectMeetingId (como esta) se ignoran."
+  },
+  {
+    "question": "¿Qué decidimos sobre el presupuesto del próximo trimestre?",
+    "expectMeetingId": "example-meeting-id-0001"
+  },
+  {
+    "question": "¿Quién quedó a cargo de la migración de la base de datos y para cuándo?",
+    "expectMeetingId": "example-meeting-id-0002"
+  },
+  {
+    "question": "¿Cuál fue la cifra de ventas que se mencionó en la reunión de planificación?",
+    "expectMeetingId": "example-meeting-id-0003"
+  },
+  {
+    "question": "¿Qué preguntas quedaron abiertas sobre el lanzamiento del nuevo producto?",
+    "expectMeetingId": "example-meeting-id-0004"
+  },
+  {
+    "question": "¿Qué acordamos con el equipo de soporte sobre los tiempos de respuesta a incidentes?",
+    "expectMeetingId": "example-meeting-id-0005"
+  }
+]
