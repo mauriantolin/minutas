@@ -32,6 +32,12 @@ export interface Meeting {
   audioConsent?: AudioConsent;
   /** Audio declared at finalize but possibly still uploading — Gate B's poll target. */
   audioPending?: AudioPendingDeclaration;
+  /** Second-brain vector indexing outcome; absent until first index attempt. */
+  indexStatus?: BrainIndexStatus;
+  /** INDEX_VERSION the meeting was last indexed under (blue/green migration marker). */
+  indexVersion?: number;
+  /** ISO-8601 UTC of the last successful indexing. */
+  indexedAt?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -633,4 +639,87 @@ export interface PipelineTelemetryCounters {
   /** ISO-8601 UTC. */
   windowStart: string;
   windowEnd: string;
+}
+
+// ---------------------------------------------------------------------------
+// Second Brain: account-level chat over meetings + personal notes.
+// ---------------------------------------------------------------------------
+
+export type BrainIndexStatus = "indexed" | "failed";
+
+export type NoteSource = "typed" | "voice";
+
+/** Personal note; private to `ownerSub` (sort key + retrieval filter). */
+export interface Note {
+  tenantId: string;
+  /** ULID — chronological ordering inside the NOTE# sort-key range. */
+  noteId: string;
+  ownerSub: string;
+  title: string;
+  /** As typed/dictated; kept verbatim. */
+  rawText: string;
+  /** LLM-cleaned structured version; the one that gets embedded. */
+  cleanText: string;
+  source: NoteSource;
+  /** ISO-8601 UTC. */
+  createdAt: string;
+  updatedAt: string;
+  indexVersion?: number;
+}
+
+export interface NoteCreateRequest {
+  rawText: string;
+  source: NoteSource;
+}
+
+export interface NoteUpdateRequest {
+  title?: string;
+  rawText?: string;
+  cleanText?: string;
+  /** Re-run LLM cleanup on rawText and re-derive title/cleanText. */
+  reclean?: boolean;
+}
+
+/** Resolved source reference backing a brain answer. */
+export interface BrainCitation {
+  /** Raw marker as emitted in the answer: "M:{meetingId}:T{n}" | "N:{noteId}". */
+  ref: string;
+  kind: "meeting" | "note";
+  id: string;
+  turnId?: string;
+  title: string;
+  /** ISO-8601 date of the source. */
+  date?: string;
+  /** Dashboard deep-link: /meeting?id=X&turn=Tn or /notes?id=N. */
+  url: string;
+}
+
+export interface BrainMessage {
+  role: "user" | "assistant";
+  /** Markdown (assistant) or plain text (user). */
+  text: string;
+  citations?: BrainCitation[];
+  /** ISO-8601 UTC. */
+  at: string;
+}
+
+export interface BrainThread {
+  /** ULID. */
+  threadId: string;
+  title: string;
+  messages: BrainMessage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BrainAskRequest {
+  threadId?: string;
+  message: string;
+}
+
+export interface BrainAskResponse {
+  threadId: string;
+  /** Markdown with [M:id:Tn]/[N:id] citation markers. */
+  answer: string;
+  citations: BrainCitation[];
 }
