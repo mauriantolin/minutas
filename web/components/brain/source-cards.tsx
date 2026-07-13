@@ -32,6 +32,14 @@ export function SourceCards({ citations }: SourceCardsProps) {
             {c.kind === "meeting" ? "Reunión" : "Nota"}
           </Badge>
           <span className="min-w-0 truncate text-xs font-medium">{c.title}</span>
+          {c.turnId && (
+            <Badge
+              variant="outline"
+              className="shrink-0 px-1.5 py-0 font-mono text-[10px] text-muted-foreground"
+            >
+              {c.turnId}
+            </Badge>
+          )}
           {c.date && (
             <span className="shrink-0 text-[11px] text-muted-foreground">
               {new Date(c.date).toLocaleDateString("es-AR")}
